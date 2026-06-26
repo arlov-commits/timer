@@ -16,9 +16,13 @@ and tap start.
   it back, tap × to remove. Stored locally.
 - **Soft ending bell** — a singing-bowl tone synthesized with the Web Audio
   API, so there are no sound files to download. Mute everything with the bell
-  icon.
-- **Optional start tone** — toggle the bell at the start of a sit on or off
-  independently.
+  icon (top right).
+- **Optional start tone** — the ♪ icon (top left) toggles the opening chime on
+  or off, independently of the master mute.
+- **Mobile-first** — built for the phone: large touch targets, no text-select
+  on long-press, clockwise countdown, and installable to the home screen.
+- **Everything persists per device** — duration, both sound toggles, and your
+  presets are all stored in `localStorage`.
 - **Installable PWA** — add to your home screen; works with the connection
   off entirely.
 - **Keyboard** — `Space` start/pause/resume, `Esc` back to the wheel.
