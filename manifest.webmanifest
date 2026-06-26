@@ -1,6 +1,6 @@
 {
-  "name": "Still — Meditation Timer",
-  "short_name": "Still",
+  "name": "dìng — Meditation Timer",
+  "short_name": "dìng",
   "description": "A bare-bones, 100% offline meditation timer. Set the duration on a rolling wheel and begin.",
   "start_url": "./index.html",
   "scope": "./",

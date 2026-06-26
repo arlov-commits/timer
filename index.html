@@ -8,7 +8,7 @@
 <link rel="manifest" href="manifest.webmanifest" />
 <link rel="icon" href="icon.svg" type="image/svg+xml" />
 <link rel="apple-touch-icon" href="icon.svg" />
-<title>Still</title>
+<title>dìng</title>
 <style>
   :root {
     --midnight: #0b1410;
@@ -54,6 +54,14 @@
   }
   .icon-btn:active { transform: scale(0.92); }
   .icon-btn.right { right: 12px; }
+
+  /* wordmark logo: the 定 glyph, top-left */
+  .logo {
+    position: fixed; top: calc(16px + env(safe-area-inset-top)); left: 18px;
+    font-size: 22px; line-height: 1; color: var(--ochre); opacity: 0.65;
+    font-family: "Noto Sans CJK SC", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", serif;
+    pointer-events: none; user-select: none;
+  }
 
   /* start-sound toggle pill, bottom-right corner */
   .toggle-pill {
@@ -223,6 +231,7 @@
 </style>
 </head>
 <body>
+  <div class="logo" aria-label="dìng" role="img">定</div>
   <button class="icon-btn right" id="muteBtn" aria-label="Toggle sound">🔔</button>
 
   <main>
@@ -281,6 +290,16 @@
 (function () {
   "use strict";
 
+  // ---------- Migrate legacy "still.*" storage to "ding.*" (one-time) ----------
+  try {
+    ["sound", "starttone", "dur", "presets"].forEach(function (k) {
+      var oldK = "still." + k, newK = "ding." + k;
+      if (localStorage.getItem(newK) === null && localStorage.getItem(oldK) !== null) {
+        localStorage.setItem(newK, localStorage.getItem(oldK));
+      }
+    });
+  } catch (e) {}
+
   // ---------- Bell (synthesized, no audio files = fully offline) ----------
   var audioCtx = null;
   function ensureAudio() {
@@ -314,12 +333,12 @@
 
   // ---------- Sound pref ----------
   var soundOn = true;
-  try { soundOn = localStorage.getItem("still.sound") !== "off"; } catch (e) {}
+  try { soundOn = localStorage.getItem("ding.sound") !== "off"; } catch (e) {}
   var muteBtn = $("muteBtn");
   function renderMute() { muteBtn.textContent = soundOn ? "🔔" : "🔕"; muteBtn.style.opacity = soundOn ? "0.75" : "0.4"; }
   muteBtn.addEventListener("click", function () {
     soundOn = !soundOn;
-    try { localStorage.setItem("still.sound", soundOn ? "on" : "off"); } catch (e) {}
+    try { localStorage.setItem("ding.sound", soundOn ? "on" : "off"); } catch (e) {}
     renderMute();
     if (soundOn) { ensureAudio(); bell(0.4); }
   });
@@ -327,7 +346,7 @@
 
   // ---------- Start-tone pref (independent toggle) ----------
   var startToneOn = true;
-  try { startToneOn = localStorage.getItem("still.starttone") !== "off"; } catch (e) {}
+  try { startToneOn = localStorage.getItem("ding.starttone") !== "off"; } catch (e) {}
   var startToneBtn = $("startToneBtn"), startToneLabel = $("startToneLabel");
   function renderStartTone() {
     startToneBtn.classList.toggle("on", startToneOn);
@@ -336,7 +355,7 @@
   }
   startToneBtn.addEventListener("click", function () {
     startToneOn = !startToneOn;
-    try { localStorage.setItem("still.starttone", startToneOn ? "on" : "off"); } catch (e) {}
+    try { localStorage.setItem("ding.starttone", startToneOn ? "on" : "off"); } catch (e) {}
     renderStartTone();
     if (startToneOn && soundOn) { ensureAudio(); bell(0.5); }
   });
@@ -373,7 +392,7 @@
     }, { passive: true });
   }
   function persistDuration() {
-    try { localStorage.setItem("still.dur", String(pickedSeconds())); } catch (e) {}
+    try { localStorage.setItem("ding.dur", String(pickedSeconds())); } catch (e) {}
   }
 
   var wheelMin = $("wheelMin"), wheelSec = $("wheelSec");
@@ -385,16 +404,16 @@
 
   // restore last duration, default 10:00
   var lastDur = 600;
-  try { var s = parseInt(localStorage.getItem("still.dur"), 10); if (!isNaN(s) && s > 0) lastDur = s; } catch (e) {}
+  try { var s = parseInt(localStorage.getItem("ding.dur"), 10); if (!isNaN(s) && s > 0) lastDur = s; } catch (e) {}
   setWheel(wheelMin, Math.min(120, Math.floor(lastDur / 60)));
   setWheel(wheelSec, lastDur % 60);
 
   // ---------- Named presets (saved locally) ----------
   var presets = [];
-  try { var pr = JSON.parse(localStorage.getItem("still.presets") || "[]"); if (Array.isArray(pr)) presets = pr; } catch (e) {}
+  try { var pr = JSON.parse(localStorage.getItem("ding.presets") || "[]"); if (Array.isArray(pr)) presets = pr; } catch (e) {}
   var presetsEl = $("presets"), saverow = $("saverow"), presetName = $("presetName");
 
-  function savePresets() { try { localStorage.setItem("still.presets", JSON.stringify(presets)); } catch (e) {} }
+  function savePresets() { try { localStorage.setItem("ding.presets", JSON.stringify(presets)); } catch (e) {} }
   function fmtShort(sec) { var m = Math.floor(sec / 60), s = sec % 60; return m + ":" + (s < 10 ? "0" : "") + s; }
 
   function renderPresets() {
@@ -470,7 +489,7 @@
   function start() {
     totalSec = pickedSeconds();
     if (totalSec <= 0) { bell(0.3); return; }      // nothing set; nudge
-    try { localStorage.setItem("still.dur", String(totalSec)); } catch (e) {}
+    try { localStorage.setItem("ding.dur", String(totalSec)); } catch (e) {}
     remaining = totalSec;
     enterRun();
     if (startToneOn) bell(0.7);

@@ -1,4 +1,4 @@
-# Still — Meditation Timer
+# dìng （定） — Meditation Timer
 
 A **bare-bones, 100% offline** meditation timer for quick launch-and-start
 sits. No accounts, no tracking, no network. Spin the wheel to set a duration
