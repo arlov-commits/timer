@@ -13,16 +13,18 @@ and tap start.
 - **Set a new timer anytime** — when a sit ends or you stop, you're back on
   the wheel; just spin and start again. No reset step.
 - **Named presets** — save the current length with a name, tap a chip to load
-  it back, tap × to remove. Stored locally.
-- **Soft ending bell** — a singing-bowl tone synthesized with the Web Audio
-  API, so there are no sound files to download. Mute everything with the bell
-  icon (top right).
+  it back, tap × to remove. A preset also remembers the **bell tone** it was
+  saved with. Stored locally.
+- **Selectable bell tones** — tap the bell icon (top right) to cycle through
+  the meditation bells; it plays the cycled-to tone and briefly names it. The
+  cycle includes a **Silent** step, which is how you mute. The chosen tone is
+  used for both the start and end bells.
 - **Optional start sound** — the toggle in the bottom-right corner turns the
-  opening chime on or off, independently of the master mute.
+  opening bell on or off, independently of the tone selection.
 - **Mobile-first** — built for the phone: large touch targets, no text-select
   on long-press, clockwise countdown, and installable to the home screen.
-- **Everything persists per device** — duration, both sound toggles, and your
-  presets are all stored in `localStorage`.
+- **Everything persists per device** — duration, selected tone, start-sound
+  toggle, and your presets are all stored in `localStorage`.
 - **Installable PWA** — add to your home screen; works with the connection
   off entirely.
 - **Keyboard** — `Space` start/pause/resume, `Esc` back to the wheel.
@@ -42,11 +44,14 @@ A single static page — no build step.
 | File | Purpose |
 | --- | --- |
 | `index.html` | The whole app — markup, styles, and logic. |
-| `sw.js` | Service worker that caches the shell for offline launch. |
+| `sw.js` | Service worker that caches the shell + assets for offline launch. |
 | `manifest.webmanifest` | PWA metadata for installing to the home screen. |
-| `icon.svg` | App icon. |
+| `assets/logo.svg`, `assets/logo-mark.png` | Brand logo (favicon) and the in-app ink mark. |
+| `assets/icon-*.png`, `assets/apple-touch-icon.png` | Home-screen / install icons. |
+| `assets/sounds/*.mp3` | The meditation bell recordings. |
 
 ## Privacy
 
-Everything stays on your device — only your last duration and mute preference
-are kept in `localStorage`. Nothing is ever sent anywhere.
+Everything stays on your device — only your last duration, selected tone,
+start-sound toggle, and presets are kept in `localStorage`. Nothing is ever
+sent anywhere.

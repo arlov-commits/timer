@@ -6,8 +6,9 @@
 <meta name="theme-color" content="#0b1410" />
 <meta name="description" content="A bare-bones, 100% offline meditation timer. Set the duration on a rolling wheel and begin." />
 <link rel="manifest" href="manifest.webmanifest" />
-<link rel="icon" href="icon.svg" type="image/svg+xml" />
-<link rel="apple-touch-icon" href="icon.svg" />
+<link rel="icon" href="assets/logo.svg" type="image/svg+xml" />
+<link rel="icon" type="image/png" sizes="192x192" href="assets/icon-192.png" />
+<link rel="apple-touch-icon" href="assets/apple-touch-icon.png" />
 <title>dìng</title>
 <style>
   :root {
@@ -55,11 +56,21 @@
   .icon-btn:active { transform: scale(0.92); }
   .icon-btn.right { right: 12px; }
 
-  /* wordmark logo: the 定 glyph, top-left */
+  /* transient label naming the cycled-to tone */
+  .tone-name {
+    position: fixed; top: calc(58px + env(safe-area-inset-top)); right: 12px;
+    color: var(--cream); font-size: 12px; letter-spacing: 0.4px;
+    background: var(--midnight-2); border: 1px solid var(--forest-deep);
+    padding: 5px 10px; border-radius: 999px; white-space: nowrap;
+    opacity: 0; transform: translateY(-4px); pointer-events: none;
+    transition: opacity 0.18s ease, transform 0.18s ease;
+  }
+  .tone-name.show { opacity: 1; transform: translateY(0); }
+
+  /* wordmark logo: the brush 定 ink mark (transparent PNG), top-left */
   .logo {
-    position: fixed; top: calc(16px + env(safe-area-inset-top)); left: 18px;
-    font-size: 22px; line-height: 1; color: var(--ochre); opacity: 0.65;
-    font-family: "Noto Sans CJK SC", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", serif;
+    position: fixed; top: calc(12px + env(safe-area-inset-top)); left: 14px;
+    width: 34px; height: 34px; opacity: 0.9;
     pointer-events: none; user-select: none;
   }
 
@@ -231,8 +242,9 @@
 </style>
 </head>
 <body>
-  <div class="logo" aria-label="dìng" role="img">定</div>
-  <button class="icon-btn right" id="muteBtn" aria-label="Toggle sound">🔔</button>
+  <img class="logo" src="assets/logo-mark.png" alt="dìng" />
+  <button class="icon-btn right" id="toneBtn" aria-label="Bell tone">🔔</button>
+  <span class="tone-name" id="toneName" aria-live="polite"></span>
 
   <main>
     <div class="stage">
@@ -310,8 +322,7 @@
     if (audioCtx && audioCtx.state === "suspended") audioCtx.resume();
     return audioCtx;
   }
-  function bell(strength) {
-    if (!soundOn) return;
+  function synthBell(strength) {
     var ctx = ensureAudio(); if (!ctx) return;
     var now = ctx.currentTime, g = strength || 1;
     var master = ctx.createGain();
@@ -331,18 +342,84 @@
 
   var $ = function (id) { return document.getElementById(id); };
 
-  // ---------- Sound pref ----------
-  var soundOn = true;
-  try { soundOn = localStorage.getItem("ding.sound") !== "off"; } catch (e) {}
-  var muteBtn = $("muteBtn");
-  function renderMute() { muteBtn.textContent = soundOn ? "🔔" : "🔕"; muteBtn.style.opacity = soundOn ? "0.75" : "0.4"; }
-  muteBtn.addEventListener("click", function () {
-    soundOn = !soundOn;
-    try { localStorage.setItem("ding.sound", soundOn ? "on" : "off"); } catch (e) {}
-    renderMute();
-    if (soundOn) { ensureAudio(); bell(0.4); }
+  // ---------- Bell tones (selectable; cycled via the top-right icon) ----------
+  var TONES = [
+    { id: "meditation-bell", name: "Meditation bell", src: "assets/sounds/freesound_community-bell-meditation-75335.mp3" },
+    { id: "singing-bell",    name: "Singing bell",    src: "assets/sounds/freesound_community-singing-bell-hit-2-75258.mp3" },
+    { id: "root-chakra",     name: "Root chakra",     src: "assets/sounds/floraphonic-deep-meditation-bell-hit-root-chakra-1-174455.mp3" },
+    { id: "burmese-bell",    name: "Burmese bell",    src: "assets/sounds/mandakimdk-big-bellburmese-367944.mp3" },
+    { id: "ding",            name: "Ding",            src: "assets/sounds/freesound_community-ding-101492.mp3" },
+    { id: "silent",          name: "Silent" }
+  ];
+  function toneById(id) {
+    for (var i = 0; i < TONES.length; i++) if (TONES[i].id === id) return TONES[i];
+    return TONES[0];
+  }
+
+  // current selection, persisted. migrate the old mute flag (ding.sound=off -> silent)
+  var currentToneId = TONES[0].id;
+  try {
+    var savedTone = localStorage.getItem("ding.tone");
+    if (savedTone && toneById(savedTone).id === savedTone) currentToneId = savedTone;
+    else if (localStorage.getItem("ding.sound") === "off") currentToneId = "silent";
+  } catch (e) {}
+
+  var audioEls = {};
+  function getAudio(t) {
+    if (!t.src) return null;
+    if (!audioEls[t.id]) { var a = new Audio(t.src); a.preload = "auto"; audioEls[t.id] = a; }
+    return audioEls[t.id];
+  }
+  // play the currently selected tone — the single entry point for start + end bells
+  function bell(strength) {
+    var t = toneById(currentToneId);
+    if (t.id === "silent" || !t.src) return;
+    var a = getAudio(t);
+    try {
+      a.pause(); a.currentTime = 0;
+      a.volume = Math.max(0, Math.min(1, strength == null ? 1 : strength));
+      var pr = a.play();
+      if (pr && pr.catch) pr.catch(function () { synthBell(strength); });
+    } catch (e) { synthBell(strength); }
+  }
+  // unlock the audio element inside a user gesture so the end bell can fire later (iOS)
+  function primeTone() {
+    var t = toneById(currentToneId);
+    if (t.id === "silent" || !t.src) return;
+    var a = getAudio(t);
+    try {
+      a.volume = 0;
+      var pr = a.play();
+      if (pr && pr.then) pr.then(function () { a.pause(); a.currentTime = 0; a.volume = 1; }).catch(function () {});
+    } catch (e) {}
+  }
+
+  var toneBtn = $("toneBtn"), toneName = $("toneName"), toneNameTimer = null;
+  function renderTone() {
+    var t = toneById(currentToneId), silent = t.id === "silent";
+    toneBtn.textContent = silent ? "🔕" : "🔔";
+    toneBtn.style.opacity = silent ? "0.4" : "0.75";
+    toneBtn.setAttribute("aria-label", silent ? "Bell tone: silent" : "Bell tone: " + t.name);
+    toneBtn.title = silent ? "Silent" : t.name;
+  }
+  function flashToneName(name) {
+    toneName.textContent = name;
+    toneName.classList.add("show");
+    clearTimeout(toneNameTimer);
+    toneNameTimer = setTimeout(function () { toneName.classList.remove("show"); }, 1400);
+  }
+  function setTone(id, opts) {
+    currentToneId = toneById(id).id;
+    try { localStorage.setItem("ding.tone", currentToneId); } catch (e) {}
+    renderTone();
+    if (opts && opts.flash) flashToneName(toneById(currentToneId).name);
+    if (opts && opts.preview && currentToneId !== "silent") bell(0.85);
+  }
+  toneBtn.addEventListener("click", function () {
+    var i = TONES.indexOf(toneById(currentToneId));
+    setTone(TONES[(i + 1) % TONES.length].id, { flash: true, preview: true });
   });
-  renderMute();
+  renderTone();
 
   // ---------- Start-tone pref (independent toggle) ----------
   var startToneOn = true;
@@ -357,7 +434,7 @@
     startToneOn = !startToneOn;
     try { localStorage.setItem("ding.starttone", startToneOn ? "on" : "off"); } catch (e) {}
     renderStartTone();
-    if (startToneOn && soundOn) { ensureAudio(); bell(0.5); }
+    if (startToneOn) bell(0.5);
   });
   renderStartTone();
 
@@ -440,6 +517,7 @@
   function loadPreset(p) {
     setWheel(wheelMin, Math.min(120, Math.floor(p.sec / 60)));
     setWheel(wheelSec, p.sec % 60);
+    if (p.tone) setTone(p.tone, { flash: true });   // restore the preset's tone (no preview sound)
   }
   function removePreset(id) {
     presets = presets.filter(function (p) { return p.id !== id; });
@@ -455,7 +533,7 @@
     var sec = pickedSeconds();
     if (sec <= 0) { closeSave(); return; }
     var name = (presetName.value || "").trim() || fmtShort(sec);
-    presets.push({ id: "p" + Date.now(), name: name, sec: sec });
+    presets.push({ id: "p" + Date.now(), name: name, sec: sec, tone: currentToneId });
     savePresets(); renderPresets(); closeSave();
   }
   $("presetSave").addEventListener("click", commitSave);
@@ -492,7 +570,7 @@
     try { localStorage.setItem("ding.dur", String(totalSec)); } catch (e) {}
     remaining = totalSec;
     enterRun();
-    if (startToneOn) bell(0.7);
+    if (startToneOn) bell(0.7); else primeTone();   // play start bell, or just unlock audio for the end bell
     beginTicking();
   }
   function beginTicking() {

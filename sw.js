@@ -1,11 +1,21 @@
 /* dìng — offline service worker.
    Caches the app shell so it launches with no network at all. */
-var CACHE = "ding-v5";
+var CACHE = "ding-v6";
 var ASSETS = [
   "./",
   "./index.html",
   "./manifest.webmanifest",
-  "./icon.svg"
+  "./assets/logo.svg",
+  "./assets/logo-mark.png",
+  "./assets/icon-192.png",
+  "./assets/icon-512.png",
+  "./assets/icon-maskable-512.png",
+  "./assets/apple-touch-icon.png",
+  "./assets/sounds/freesound_community-bell-meditation-75335.mp3",
+  "./assets/sounds/freesound_community-singing-bell-hit-2-75258.mp3",
+  "./assets/sounds/floraphonic-deep-meditation-bell-hit-root-chakra-1-174455.mp3",
+  "./assets/sounds/mandakimdk-big-bellburmese-367944.mp3",
+  "./assets/sounds/freesound_community-ding-101492.mp3"
 ];
 
 self.addEventListener("install", function (e) {
