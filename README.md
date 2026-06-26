@@ -9,7 +9,8 @@ and tap start.
 ## Features
 
 - **Rolling wheel duration** — set minutes and seconds on an iOS-style scroll
-  wheel. That's the whole interface.
+  wheel. On a phone, flick to spin; on a PC, use the mouse wheel, click-and-drag
+  to spin, or click a digit above/below the centre to roll to it.
 - **Set a new timer anytime** — when a sit ends or you stop, you're back on
   the wheel; just spin and start again. No reset step.
 - **Named presets** — save the current length with a name, tap a chip to load
