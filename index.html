@@ -6,6 +6,8 @@
 <meta name="theme-color" content="#0b1410" />
 <meta name="description" content="A bare-bones, 100% offline meditation timer. Set the duration on a rolling wheel and begin." />
 <link rel="manifest" href="manifest.webmanifest" />
+<link rel="icon" type="image/png" sizes="32x32" href="assets/favicon-32.png" />
+<link rel="icon" type="image/png" sizes="16x16" href="assets/favicon-16.png" />
 <link rel="icon" href="assets/logo.svg" type="image/svg+xml" />
 <link rel="icon" type="image/png" sizes="192x192" href="assets/icon-192.png" />
 <link rel="apple-touch-icon" href="assets/apple-touch-icon.png" />
@@ -370,14 +372,21 @@
     if (!audioEls[t.id]) { var a = new Audio(t.src); a.preload = "auto"; audioEls[t.id] = a; }
     return audioEls[t.id];
   }
+  // stop whatever tone is currently sounding so only one ever plays at a time
+  var nowPlaying = null;
+  function stopPlaying() {
+    if (nowPlaying) { try { nowPlaying.pause(); nowPlaying.currentTime = 0; } catch (e) {} nowPlaying = null; }
+  }
   // play the currently selected tone — the single entry point for start + end bells
   function bell(strength) {
+    stopPlaying();                                  // cut off any tone still ringing
     var t = toneById(currentToneId);
     if (t.id === "silent" || !t.src) return;
     var a = getAudio(t);
     try {
-      a.pause(); a.currentTime = 0;
+      a.currentTime = 0;
       a.volume = Math.max(0, Math.min(1, strength == null ? 1 : strength));
+      nowPlaying = a;
       var pr = a.play();
       if (pr && pr.catch) pr.catch(function () { synthBell(strength); });
     } catch (e) { synthBell(strength); }

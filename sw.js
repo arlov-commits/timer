@@ -1,12 +1,14 @@
 /* dìng — offline service worker.
    Caches the app shell so it launches with no network at all. */
-var CACHE = "ding-v6";
+var CACHE = "ding-v7";
 var ASSETS = [
   "./",
   "./index.html",
   "./manifest.webmanifest",
   "./assets/logo.svg",
   "./assets/logo-mark.png",
+  "./assets/favicon-32.png",
+  "./assets/favicon-16.png",
   "./assets/icon-192.png",
   "./assets/icon-512.png",
   "./assets/icon-maskable-512.png",
