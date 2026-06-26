@@ -1,0 +1,681 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+<meta name="theme-color" content="#1a1f2b" />
+<meta name="description" content="A simple, 100% offline meditation timer with customizable presets and interval bells." />
+<link rel="manifest" href="manifest.webmanifest" />
+<link rel="icon" href="icon.svg" type="image/svg+xml" />
+<link rel="apple-touch-icon" href="icon.svg" />
+<title>Still — Meditation Timer</title>
+<style>
+  :root {
+    --bg: #11151d;
+    --bg-2: #1a1f2b;
+    --panel: #222836;
+    --panel-2: #2b3242;
+    --text: #e8ecf3;
+    --muted: #8b95a7;
+    --accent: #76c7be;
+    --accent-soft: rgba(118, 199, 190, 0.15);
+    --ring-track: #2b3242;
+    --danger: #d98c8c;
+    --radius: 16px;
+    --shadow: 0 10px 40px rgba(0, 0, 0, 0.35);
+  }
+
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+
+  html, body {
+    margin: 0;
+    height: 100%;
+  }
+
+  body {
+    background: radial-gradient(120% 120% at 50% 0%, var(--bg-2) 0%, var(--bg) 60%);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    min-height: 100%;
+    padding: env(safe-area-inset-top) 18px calc(24px + env(safe-area-inset-bottom));
+    -webkit-font-smoothing: antialiased;
+  }
+
+  header {
+    width: 100%;
+    max-width: 460px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 18px 2px 6px;
+  }
+
+  .brand {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-weight: 600;
+    letter-spacing: 0.3px;
+  }
+  .brand .dot {
+    width: 11px; height: 11px; border-radius: 50%;
+    background: var(--accent);
+    box-shadow: 0 0 12px var(--accent);
+  }
+  .brand small { color: var(--muted); font-weight: 400; font-size: 12px; }
+
+  main {
+    width: 100%;
+    max-width: 460px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 22px;
+    flex: 1;
+  }
+
+  /* ---- Timer dial ---- */
+  .dial-wrap {
+    position: relative;
+    width: min(78vw, 320px);
+    height: min(78vw, 320px);
+    margin-top: 8px;
+  }
+  .dial-wrap svg { width: 100%; height: 100%; transform: rotate(-90deg); }
+  .dial-track { fill: none; stroke: var(--ring-track); stroke-width: 10; }
+  .dial-progress {
+    fill: none;
+    stroke: var(--accent);
+    stroke-width: 10;
+    stroke-linecap: round;
+    transition: stroke-dashoffset 0.35s linear;
+    filter: drop-shadow(0 0 6px var(--accent-soft));
+  }
+  .dial-center {
+    position: absolute; inset: 0;
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    gap: 6px;
+  }
+  .time {
+    font-size: clamp(44px, 14vw, 60px);
+    font-weight: 300;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: 1px;
+  }
+  .time-sub { color: var(--muted); font-size: 13px; min-height: 16px; }
+
+  .breath {
+    position: absolute; inset: 0;
+    border-radius: 50%;
+    background: radial-gradient(circle, var(--accent-soft) 0%, transparent 70%);
+    opacity: 0;
+    pointer-events: none;
+  }
+  body.running .breath {
+    animation: breathe 8s ease-in-out infinite;
+  }
+  @keyframes breathe {
+    0%, 100% { opacity: 0.15; transform: scale(0.82); }
+    50% { opacity: 0.55; transform: scale(1.0); }
+  }
+
+  /* ---- Controls ---- */
+  .controls { display: flex; gap: 14px; align-items: center; }
+  button {
+    font-family: inherit;
+    cursor: pointer;
+    border: none;
+    color: var(--text);
+    background: var(--panel);
+    transition: transform 0.08s ease, background 0.15s ease, opacity 0.15s ease;
+  }
+  button:active { transform: scale(0.95); }
+  button:disabled { opacity: 0.4; cursor: default; }
+
+  .btn-primary {
+    width: 76px; height: 76px; border-radius: 50%;
+    background: var(--accent);
+    color: #0e1218;
+    font-size: 26px;
+    display: grid; place-items: center;
+    box-shadow: 0 8px 24px var(--accent-soft);
+  }
+  .btn-secondary {
+    width: 54px; height: 54px; border-radius: 50%;
+    background: var(--panel-2);
+    color: var(--muted);
+    font-size: 18px;
+    display: grid; place-items: center;
+  }
+
+  /* ---- Presets ---- */
+  .section { width: 100%; }
+  .section-head {
+    display: flex; align-items: center; justify-content: space-between;
+    margin: 4px 2px 10px;
+  }
+  .section-head h2 {
+    font-size: 13px; text-transform: uppercase; letter-spacing: 1.4px;
+    color: var(--muted); font-weight: 600; margin: 0;
+  }
+  .link-btn {
+    background: none; color: var(--accent); font-size: 13px; padding: 4px 6px;
+  }
+
+  .presets {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
+    gap: 10px;
+  }
+  .preset {
+    background: var(--panel);
+    border-radius: var(--radius);
+    padding: 14px 12px;
+    display: flex; flex-direction: column; gap: 4px;
+    text-align: left;
+    border: 1px solid transparent;
+    position: relative;
+    overflow: hidden;
+  }
+  .preset.active { border-color: var(--accent); background: var(--panel-2); }
+  .preset .p-name { font-weight: 600; font-size: 14px; }
+  .preset .p-meta { color: var(--muted); font-size: 12px; }
+  .preset .p-del {
+    position: absolute; top: 6px; right: 6px;
+    width: 22px; height: 22px; border-radius: 50%;
+    background: rgba(0,0,0,0.25); color: var(--muted);
+    font-size: 13px; line-height: 1; display: none; place-items: center;
+  }
+  .preset.editing .p-del { display: grid; }
+  .preset.add { align-items: center; justify-content: center; color: var(--muted); border: 1px dashed var(--panel-2); background: transparent; }
+  .preset.add .plus { font-size: 24px; line-height: 1; }
+
+  /* ---- Modal / sheet ---- */
+  .scrim {
+    position: fixed; inset: 0;
+    background: rgba(0,0,0,0.6);
+    display: none;
+    align-items: flex-end;
+    justify-content: center;
+    z-index: 50;
+  }
+  .scrim.open { display: flex; }
+  .sheet {
+    width: 100%; max-width: 460px;
+    background: var(--bg-2);
+    border-radius: 20px 20px 0 0;
+    padding: 22px 20px calc(26px + env(safe-area-inset-bottom));
+    box-shadow: var(--shadow);
+    animation: rise 0.22s ease;
+  }
+  @keyframes rise { from { transform: translateY(20px); opacity: 0.6; } to { transform: none; opacity: 1; } }
+  .sheet h3 { margin: 0 0 18px; font-weight: 600; }
+
+  .field { margin-bottom: 16px; }
+  .field label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 7px; }
+  .field input {
+    width: 100%; padding: 12px 14px;
+    background: var(--panel); border: 1px solid var(--panel-2);
+    border-radius: 12px; color: var(--text); font-size: 16px; font-family: inherit;
+  }
+  .field input:focus { outline: none; border-color: var(--accent); }
+
+  .row { display: flex; gap: 12px; }
+  .row .field { flex: 1; }
+
+  .toggle-row {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 12px 2px; border-top: 1px solid var(--panel);
+  }
+  .toggle-row span { font-size: 14px; }
+  .switch { position: relative; width: 46px; height: 26px; flex: none; }
+  .switch input { display: none; }
+  .switch .slider {
+    position: absolute; inset: 0; border-radius: 26px;
+    background: var(--panel-2); transition: background 0.2s;
+  }
+  .switch .slider::before {
+    content: ""; position: absolute; width: 20px; height: 20px;
+    left: 3px; top: 3px; border-radius: 50%; background: var(--muted);
+    transition: transform 0.2s, background 0.2s;
+  }
+  .switch input:checked + .slider { background: var(--accent-soft); }
+  .switch input:checked + .slider::before { transform: translateX(20px); background: var(--accent); }
+
+  .sheet-actions { display: flex; gap: 12px; margin-top: 22px; }
+  .sheet-actions button { flex: 1; padding: 14px; border-radius: 12px; font-size: 15px; font-weight: 600; }
+  .btn-save { background: var(--accent); color: #0e1218; }
+  .btn-cancel { background: var(--panel); color: var(--text); }
+
+  footer { color: var(--muted); font-size: 11px; margin-top: 26px; text-align: center; }
+</style>
+</head>
+<body>
+  <header>
+    <div class="brand">
+      <span class="dot"></span>
+      <div>Still<br /><small>meditation timer</small></div>
+    </div>
+    <button class="btn-secondary" id="soundToggle" title="Toggle sound" aria-label="Toggle sound">🔔</button>
+  </header>
+
+  <main>
+    <div class="dial-wrap">
+      <div class="breath"></div>
+      <svg viewBox="0 0 100 100" aria-hidden="true">
+        <circle class="dial-track" cx="50" cy="50" r="45" />
+        <circle class="dial-progress" id="dialProgress" cx="50" cy="50" r="45" />
+      </svg>
+      <div class="dial-center">
+        <div class="time" id="timeDisplay">10:00</div>
+        <div class="time-sub" id="timeSub">tap start to begin</div>
+      </div>
+    </div>
+
+    <div class="controls">
+      <button class="btn-secondary" id="resetBtn" title="Reset" aria-label="Reset">↺</button>
+      <button class="btn-primary" id="startBtn" aria-label="Start">▶</button>
+      <button class="btn-secondary" id="addTimeBtn" title="+1 min" aria-label="Add a minute">+1</button>
+    </div>
+
+    <div class="section">
+      <div class="section-head">
+        <h2>Presets</h2>
+        <button class="link-btn" id="editPresetsBtn">Edit</button>
+      </div>
+      <div class="presets" id="presetList"></div>
+    </div>
+  </main>
+
+  <footer>100% offline · works without a connection · add to home screen for quick launch</footer>
+
+  <!-- Preset editor sheet -->
+  <div class="scrim" id="scrim">
+    <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="sheetTitle">
+      <h3 id="sheetTitle">New preset</h3>
+      <div class="field">
+        <label for="pName">Name</label>
+        <input id="pName" type="text" placeholder="Morning sit" maxlength="24" />
+      </div>
+      <div class="row">
+        <div class="field">
+          <label for="pMinutes">Duration (min)</label>
+          <input id="pMinutes" type="number" min="1" max="180" inputmode="numeric" value="10" />
+        </div>
+        <div class="field">
+          <label for="pInterval">Interval bell (min)</label>
+          <input id="pInterval" type="number" min="0" max="60" inputmode="numeric" value="0" />
+        </div>
+      </div>
+      <div class="toggle-row">
+        <span>Starting bell</span>
+        <label class="switch"><input type="checkbox" id="pStartBell" checked /><span class="slider"></span></label>
+      </div>
+      <div class="toggle-row">
+        <span>Ending bell</span>
+        <label class="switch"><input type="checkbox" id="pEndBell" checked /><span class="slider"></span></label>
+      </div>
+      <div class="sheet-actions">
+        <button class="btn-cancel" id="cancelPreset">Cancel</button>
+        <button class="btn-save" id="savePreset">Save</button>
+      </div>
+    </div>
+  </div>
+
+<script>
+(function () {
+  "use strict";
+
+  // ---------- Bell synthesis (Web Audio — no files, fully offline) ----------
+  var audioCtx = null;
+  function ensureAudio() {
+    if (!audioCtx) {
+      var AC = window.AudioContext || window.webkitAudioContext;
+      if (AC) audioCtx = new AC();
+    }
+    if (audioCtx && audioCtx.state === "suspended") audioCtx.resume();
+    return audioCtx;
+  }
+
+  // A soft singing-bowl-like tone made of a couple of detuned partials.
+  function playBell(strength) {
+    if (!soundOn) return;
+    var ctx = ensureAudio();
+    if (!ctx) return;
+    var now = ctx.currentTime;
+    var gain = strength || 1;
+    var partials = [
+      { f: 432, g: 0.5, d: 4.0 },
+      { f: 648, g: 0.22, d: 3.0 },
+      { f: 864, g: 0.12, d: 2.2 }
+    ];
+    var master = ctx.createGain();
+    master.gain.value = 0.0001;
+    master.connect(ctx.destination);
+    master.gain.setValueAtTime(0.0001, now);
+    master.gain.exponentialRampToValueAtTime(0.9 * gain, now + 0.02);
+    master.gain.exponentialRampToValueAtTime(0.0001, now + 4.2);
+
+    partials.forEach(function (p) {
+      var osc = ctx.createOscillator();
+      var g = ctx.createGain();
+      osc.type = "sine";
+      osc.frequency.value = p.f;
+      g.gain.value = p.g;
+      g.gain.setValueAtTime(p.g, now);
+      g.gain.exponentialRampToValueAtTime(0.0001, now + p.d);
+      osc.connect(g);
+      g.connect(master);
+      osc.start(now);
+      osc.stop(now + p.d + 0.1);
+    });
+  }
+
+  // ---------- State ----------
+  var DEFAULT_PRESETS = [
+    { id: "p3", name: "Quick", min: 3, interval: 0, startBell: true, endBell: true },
+    { id: "p10", name: "Daily", min: 10, interval: 0, startBell: true, endBell: true },
+    { id: "p20", name: "Deep", min: 20, interval: 5, startBell: true, endBell: true },
+    { id: "p45", name: "Long", min: 45, interval: 10, startBell: true, endBell: true }
+  ];
+
+  var presets = loadPresets();
+  var soundOn = loadSound();
+  var editing = false;
+
+  var totalSec = 600;          // configured length
+  var remaining = 600;         // seconds left
+  var running = false;
+  var ticker = null;
+  var endAt = 0;               // timestamp when current run ends
+  var activePresetId = null;
+  var nextIntervalAt = 0;      // remaining-seconds threshold for next interval bell
+  var intervalSec = 0;
+
+  // ---------- DOM ----------
+  var $ = function (id) { return document.getElementById(id); };
+  var dial = $("dialProgress");
+  var timeDisplay = $("timeDisplay");
+  var timeSub = $("timeSub");
+  var startBtn = $("startBtn");
+  var resetBtn = $("resetBtn");
+  var addTimeBtn = $("addTimeBtn");
+  var presetList = $("presetList");
+  var soundToggle = $("soundToggle");
+
+  var CIRC = 2 * Math.PI * 45;
+  dial.style.strokeDasharray = CIRC;
+
+  // ---------- Persistence ----------
+  function loadPresets() {
+    try {
+      var raw = localStorage.getItem("still.presets");
+      if (raw) {
+        var arr = JSON.parse(raw);
+        if (Array.isArray(arr) && arr.length) return arr;
+      }
+    } catch (e) {}
+    return DEFAULT_PRESETS.slice();
+  }
+  function savePresets() {
+    try { localStorage.setItem("still.presets", JSON.stringify(presets)); } catch (e) {}
+  }
+  function loadSound() {
+    try { return localStorage.getItem("still.sound") !== "off"; } catch (e) { return true; }
+  }
+  function saveSound() {
+    try { localStorage.setItem("still.sound", soundOn ? "on" : "off"); } catch (e) {}
+  }
+
+  // ---------- Rendering ----------
+  function fmt(sec) {
+    sec = Math.max(0, Math.round(sec));
+    var m = Math.floor(sec / 60);
+    var s = sec % 60;
+    return m + ":" + (s < 10 ? "0" : "") + s;
+  }
+
+  function renderTime() {
+    timeDisplay.textContent = fmt(remaining);
+    var frac = totalSec > 0 ? remaining / totalSec : 0;
+    dial.style.strokeDashoffset = CIRC * (1 - frac);
+  }
+
+  function renderSub() {
+    if (running) {
+      timeSub.textContent = intervalSec ? ("interval bell every " + (intervalSec / 60) + " min") : "breathe";
+    } else if (remaining < totalSec) {
+      timeSub.textContent = "paused";
+    } else {
+      timeSub.textContent = "tap start to begin";
+    }
+  }
+
+  function renderPresets() {
+    presetList.innerHTML = "";
+    presets.forEach(function (p) {
+      var el = document.createElement("button");
+      el.className = "preset" + (p.id === activePresetId ? " active" : "") + (editing ? " editing" : "");
+      var meta = p.min + " min" + (p.interval ? " · " + p.interval + "m bell" : "");
+      el.innerHTML =
+        '<span class="p-name"></span><span class="p-meta"></span>' +
+        '<span class="p-del" title="Delete">✕</span>';
+      el.querySelector(".p-name").textContent = p.name;
+      el.querySelector(".p-meta").textContent = meta;
+      el.addEventListener("click", function (e) {
+        if (editing) {
+          if (e.target.classList.contains("p-del")) { deletePreset(p.id); return; }
+          openSheet(p);
+        } else {
+          applyPreset(p);
+        }
+      });
+      presetList.appendChild(el);
+    });
+
+    var add = document.createElement("button");
+    add.className = "preset add";
+    add.innerHTML = '<span class="plus">+</span><span class="p-meta">New</span>';
+    add.addEventListener("click", function () { openSheet(null); });
+    presetList.appendChild(add);
+  }
+
+  function renderSoundBtn() {
+    soundToggle.textContent = soundOn ? "🔔" : "🔕";
+    soundToggle.style.opacity = soundOn ? "1" : "0.5";
+  }
+
+  // ---------- Timer logic ----------
+  function applyPreset(p) {
+    stop(false);
+    activePresetId = p.id;
+    totalSec = p.min * 60;
+    remaining = totalSec;
+    intervalSec = (p.interval || 0) * 60;
+    currentPreset = p;
+    renderTime();
+    renderSub();
+    renderPresets();
+  }
+
+  var currentPreset = presets[1] || presets[0];
+  function start() {
+    ensureAudio();
+    if (remaining <= 0) remaining = totalSec;
+    running = true;
+    document.body.classList.add("running");
+    startBtn.textContent = "⏸";
+    startBtn.setAttribute("aria-label", "Pause");
+    endAt = Date.now() + remaining * 1000;
+
+    // schedule next interval bell relative to current remaining
+    if (intervalSec > 0) {
+      var elapsed = totalSec - remaining;
+      var sinceLast = elapsed % intervalSec;
+      nextIntervalAt = remaining - (intervalSec - sinceLast);
+      if (nextIntervalAt <= 0) nextIntervalAt = remaining - intervalSec;
+    } else {
+      nextIntervalAt = -1;
+    }
+
+    if (remaining === totalSec && currentPreset && currentPreset.startBell) playBell(0.8);
+    renderSub();
+    tick();
+    ticker = setInterval(tick, 200);
+  }
+
+  function pause() {
+    running = false;
+    document.body.classList.remove("running");
+    startBtn.textContent = "▶";
+    startBtn.setAttribute("aria-label", "Start");
+    clearInterval(ticker);
+    ticker = null;
+    renderSub();
+  }
+
+  function stop(playReset) {
+    pause();
+    remaining = totalSec;
+    renderTime();
+    renderSub();
+  }
+
+  function tick() {
+    remaining = (endAt - Date.now()) / 1000;
+    if (intervalSec > 0 && nextIntervalAt > 0 && remaining <= nextIntervalAt) {
+      playBell(0.6);
+      nextIntervalAt -= intervalSec;
+    }
+    if (remaining <= 0) {
+      remaining = 0;
+      renderTime();
+      finish();
+      return;
+    }
+    renderTime();
+  }
+
+  function finish() {
+    pause();
+    if (currentPreset && currentPreset.endBell) playBell(1);
+    remaining = totalSec;
+    timeSub.textContent = "complete · well done";
+    renderTime();
+  }
+
+  // ---------- Sheet (preset editor) ----------
+  var scrim = $("scrim");
+  var sheetTitle = $("sheetTitle");
+  var fName = $("pName"), fMin = $("pMinutes"), fInt = $("pInterval");
+  var fStart = $("pStartBell"), fEnd = $("pEndBell");
+  var editingId = null;
+
+  function openSheet(p) {
+    editingId = p ? p.id : null;
+    sheetTitle.textContent = p ? "Edit preset" : "New preset";
+    fName.value = p ? p.name : "";
+    fMin.value = p ? p.min : 10;
+    fInt.value = p ? (p.interval || 0) : 0;
+    fStart.checked = p ? p.startBell !== false : true;
+    fEnd.checked = p ? p.endBell !== false : true;
+    scrim.classList.add("open");
+    setTimeout(function () { fName.focus(); }, 50);
+  }
+  function closeSheet() { scrim.classList.remove("open"); }
+
+  function savePresetFromSheet() {
+    var name = (fName.value || "").trim() || "Untitled";
+    var min = clampNum(parseInt(fMin.value, 10), 1, 180, 10);
+    var interval = clampNum(parseInt(fInt.value, 10), 0, 60, 0);
+    if (interval > min) interval = 0;
+    var data = {
+      id: editingId || ("p" + Date.now()),
+      name: name, min: min, interval: interval,
+      startBell: fStart.checked, endBell: fEnd.checked
+    };
+    if (editingId) {
+      presets = presets.map(function (p) { return p.id === editingId ? data : p; });
+      if (activePresetId === editingId) applyPreset(data);
+    } else {
+      presets.push(data);
+    }
+    savePresets();
+    renderPresets();
+    closeSheet();
+  }
+
+  function deletePreset(id) {
+    presets = presets.filter(function (p) { return p.id !== id; });
+    if (activePresetId === id) activePresetId = null;
+    savePresets();
+    renderPresets();
+  }
+
+  function clampNum(v, lo, hi, dflt) {
+    if (isNaN(v)) return dflt;
+    return Math.min(hi, Math.max(lo, v));
+  }
+
+  // ---------- Events ----------
+  startBtn.addEventListener("click", function () { running ? pause() : start(); });
+  resetBtn.addEventListener("click", function () { stop(true); });
+  addTimeBtn.addEventListener("click", function () {
+    totalSec += 60;
+    if (running) { endAt += 60000; } else { remaining += 60; }
+    activePresetId = null;
+    currentPreset = currentPreset || {};
+    renderTime();
+    renderPresets();
+  });
+
+  soundToggle.addEventListener("click", function () {
+    soundOn = !soundOn;
+    saveSound();
+    renderSoundBtn();
+    if (soundOn) { ensureAudio(); playBell(0.5); }
+  });
+
+  $("editPresetsBtn").addEventListener("click", function () {
+    editing = !editing;
+    $("editPresetsBtn").textContent = editing ? "Done" : "Edit";
+    renderPresets();
+  });
+
+  $("savePreset").addEventListener("click", savePresetFromSheet);
+  $("cancelPreset").addEventListener("click", closeSheet);
+  scrim.addEventListener("click", function (e) { if (e.target === scrim) closeSheet(); });
+
+  document.addEventListener("keydown", function (e) {
+    if (scrim.classList.contains("open")) {
+      if (e.key === "Escape") closeSheet();
+      if (e.key === "Enter" && e.target.tagName !== "BUTTON") savePresetFromSheet();
+      return;
+    }
+    if (e.code === "Space") { e.preventDefault(); running ? pause() : start(); }
+    if (e.key.toLowerCase() === "r") stop(true);
+  });
+
+  // Keep ticking accurately when tab returns to foreground.
+  document.addEventListener("visibilitychange", function () {
+    if (!document.hidden && running) tick();
+  });
+
+  // ---------- Init ----------
+  applyPreset(currentPreset);
+  renderPresets();
+  renderSoundBtn();
+
+  if ("serviceWorker" in navigator) {
+    window.addEventListener("load", function () {
+      navigator.serviceWorker.register("sw.js").catch(function () {});
+    });
+  }
+})();
+</script>
+</body>
+</html>
