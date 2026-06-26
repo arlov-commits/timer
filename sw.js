@@ -1,6 +1,6 @@
 /* Still — offline service worker.
    Caches the app shell so it launches with no network at all. */
-var CACHE = "still-v1";
+var CACHE = "still-v2";
 var ASSETS = [
   "./",
   "./index.html",

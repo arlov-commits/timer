@@ -1,13 +1,13 @@
 {
   "name": "Still — Meditation Timer",
   "short_name": "Still",
-  "description": "A simple, 100% offline meditation timer with customizable presets and interval bells.",
+  "description": "A bare-bones, 100% offline meditation timer. Set the duration on a rolling wheel and begin.",
   "start_url": "./index.html",
   "scope": "./",
   "display": "standalone",
   "orientation": "portrait",
-  "background_color": "#11151d",
-  "theme_color": "#1a1f2b",
+  "background_color": "#0b1410",
+  "theme_color": "#0b1410",
   "icons": [
     {
       "src": "icon.svg",

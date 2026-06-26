@@ -1,29 +1,31 @@
 # Still — Meditation Timer
 
-A simple, **100% offline** meditation timer for quick launch-and-start sits.
-No accounts, no tracking, no network — just open it and begin. Inspired by
-apps like Insight Timer, pared down to the essentials.
+A **bare-bones, 100% offline** meditation timer for quick launch-and-start
+sits. No accounts, no tracking, no network. Spin the wheel to set a duration
+and tap start.
 
 🧘 **[Open the app](https://arlov-commits.github.io/timer/)**
 
 ## Features
 
-- **Launch and start** — a big dial, one tap to begin.
-- **Makeable presets** — create, edit, and delete your own presets (name,
-  duration, interval bell, start/end bells). Saved locally in your browser.
-- **Interval bells** — optional chime every *n* minutes during a sit.
-- **Soft synthesized bells** — singing-bowl-style tones generated with the
-  Web Audio API, so there are no sound files to download. Truly offline.
-- **Installable PWA** — add to your home screen and it works with the
-  connection off entirely.
-- **Keyboard shortcuts** — `Space` start/pause, `R` reset.
+- **Rolling wheel duration** — set minutes and seconds on an iOS-style scroll
+  wheel. That's the whole interface.
+- **Set a new timer anytime** — when a sit ends or you stop, you're back on
+  the wheel; just spin and start again. No reset step.
+- **Soft ending bell** — a singing-bowl tone synthesized with the Web Audio
+  API, so there are no sound files to download. Mute it with the bell icon.
+- **Installable PWA** — add to your home screen; works with the connection
+  off entirely.
+- **Keyboard** — `Space` start/pause/resume, `Esc` back to the wheel.
+
+Theme: a dark *Pali-leaf forest / ochre / midnight* palette.
 
 ## Running it
 
-It's a single static page — no build step.
+A single static page — no build step.
 
 - **Online:** visit the GitHub Pages link above.
-- **Locally:** open `index.html` in a browser, or serve the folder
+- **Locally:** open `index.html`, or serve the folder
   (`python3 -m http.server`) so the service worker can register.
 
 ## Files
@@ -37,5 +39,5 @@ It's a single static page — no build step.
 
 ## Privacy
 
-Everything stays on your device. Presets live in `localStorage`; nothing is
-ever sent anywhere.
+Everything stays on your device — only your last duration and mute preference
+are kept in `localStorage`. Nothing is ever sent anywhere.
