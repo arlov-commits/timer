@@ -445,7 +445,6 @@
     startToneOn = !startToneOn;
     try { localStorage.setItem("ding.starttone", startToneOn ? "on" : "off"); } catch (e) {}
     renderStartTone();
-    if (startToneOn) bell(0.5);
   });
   renderStartTone();
 
