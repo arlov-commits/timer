@@ -17,8 +17,8 @@ and tap start.
 - **Soft ending bell** — a singing-bowl tone synthesized with the Web Audio
   API, so there are no sound files to download. Mute everything with the bell
   icon (top right).
-- **Optional start tone** — the ♪ icon (top left) toggles the opening chime on
-  or off, independently of the master mute.
+- **Optional start sound** — the toggle in the bottom-right corner turns the
+  opening chime on or off, independently of the master mute.
 - **Mobile-first** — built for the phone: large touch targets, no text-select
   on long-press, clockwise countdown, and installable to the home screen.
 - **Everything persists per device** — duration, both sound toggles, and your
