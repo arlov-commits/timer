@@ -48,7 +48,7 @@
   main {
     width: 100%; max-width: 420px;
     display: flex; flex-direction: column; align-items: center;
-    gap: 40px;
+    gap: 28px;
   }
 
   /* ---------- Wheel picker (set mode) ---------- */
@@ -136,6 +136,49 @@
   }
   body.run .btn-stop { display: grid; }
 
+  /* ---------- Set-mode panel: presets + start-tone toggle ---------- */
+  .setpanel { display: flex; flex-direction: column; align-items: center; gap: 16px; width: 100%; }
+  body.run .setpanel { display: none; }
+
+  .presets { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; max-width: 340px; }
+  .chip {
+    border: none; cursor: pointer; font-family: inherit;
+    background: var(--forest-deep); color: var(--cream);
+    border-radius: 999px; padding: 8px 12px; font-size: 13px;
+    display: inline-flex; align-items: center; gap: 8px;
+    transition: transform 0.08s ease;
+  }
+  .chip:active { transform: scale(0.95); }
+  .chip .c-time { color: var(--muted); font-variant-numeric: tabular-nums; }
+  .chip .c-x { color: var(--muted); font-size: 12px; line-height: 1; padding: 2px; margin: -2px -4px -2px 0; }
+  .chip .c-x:hover { color: var(--cream); }
+  .chip.add { background: transparent; border: 1px dashed var(--forest-deep); color: var(--muted); }
+
+  .saverow { display: none; gap: 8px; align-items: center; }
+  .saverow.open { display: flex; }
+  .saverow input {
+    width: 160px; padding: 9px 12px; font-size: 14px; font-family: inherit;
+    background: var(--midnight-2); border: 1px solid var(--forest-deep);
+    border-radius: 999px; color: var(--cream);
+  }
+  .saverow input:focus { outline: none; border-color: var(--ochre); }
+  .saverow .s-btn {
+    width: 36px; height: 36px; border-radius: 50%; border: none; cursor: pointer;
+    display: grid; place-items: center; font-size: 15px;
+  }
+  .saverow .ok { background: var(--ochre); color: #1a1206; }
+  .saverow .no { background: var(--forest-deep); color: var(--muted); }
+
+  .toggle-pill {
+    border: 1px solid var(--forest-deep); cursor: pointer; font-family: inherit;
+    background: transparent; color: var(--muted);
+    border-radius: 999px; padding: 7px 14px; font-size: 12px; letter-spacing: 0.4px;
+    display: inline-flex; align-items: center; gap: 7px;
+  }
+  .toggle-pill .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); }
+  .toggle-pill.on { color: var(--ochre); border-color: rgba(207, 155, 70, 0.4); }
+  .toggle-pill.on .dot { background: var(--ochre); }
+
   footer { position: fixed; bottom: calc(14px + env(safe-area-inset-bottom)); color: var(--muted); font-size: 11px; letter-spacing: 0.5px; opacity: 0.7; }
 </style>
 </head>
@@ -167,6 +210,16 @@
           <div class="label" id="timeLabel"></div>
         </div>
       </div>
+    </div>
+
+    <div class="setpanel">
+      <div class="presets" id="presets"></div>
+      <div class="saverow" id="saverow">
+        <input id="presetName" type="text" maxlength="20" placeholder="name this length" />
+        <button class="s-btn ok" id="presetSave" aria-label="Save preset">✓</button>
+        <button class="s-btn no" id="presetCancel" aria-label="Cancel">✕</button>
+      </div>
+      <button class="toggle-pill" id="startToneBtn"><span class="dot"></span><span id="startToneLabel">start tone</span></button>
     </div>
 
     <div class="controls">
@@ -225,6 +278,22 @@
   });
   renderMute();
 
+  // ---------- Start-tone pref (independent toggle) ----------
+  var startToneOn = true;
+  try { startToneOn = localStorage.getItem("still.starttone") !== "off"; } catch (e) {}
+  var startToneBtn = $("startToneBtn"), startToneLabel = $("startToneLabel");
+  function renderStartTone() {
+    startToneBtn.classList.toggle("on", startToneOn);
+    startToneLabel.textContent = startToneOn ? "start tone · on" : "start tone · off";
+  }
+  startToneBtn.addEventListener("click", function () {
+    startToneOn = !startToneOn;
+    try { localStorage.setItem("still.starttone", startToneOn ? "on" : "off"); } catch (e) {}
+    renderStartTone();
+    if (startToneOn && soundOn) { ensureAudio(); bell(0.5); }
+  });
+  renderStartTone();
+
   // ---------- Rolling wheel picker ----------
   var ITEM = 44;
   function buildWheel(el, count, fmtFn) {
@@ -266,6 +335,64 @@
   setWheel(wheelMin, Math.min(120, Math.floor(lastDur / 60)));
   setWheel(wheelSec, lastDur % 60);
 
+  // ---------- Named presets (saved locally) ----------
+  var presets = [];
+  try { var pr = JSON.parse(localStorage.getItem("still.presets") || "[]"); if (Array.isArray(pr)) presets = pr; } catch (e) {}
+  var presetsEl = $("presets"), saverow = $("saverow"), presetName = $("presetName");
+
+  function savePresets() { try { localStorage.setItem("still.presets", JSON.stringify(presets)); } catch (e) {} }
+  function fmtShort(sec) { var m = Math.floor(sec / 60), s = sec % 60; return m + ":" + (s < 10 ? "0" : "") + s; }
+
+  function renderPresets() {
+    presetsEl.innerHTML = "";
+    presets.forEach(function (p) {
+      var chip = document.createElement("button");
+      chip.className = "chip";
+      chip.innerHTML = '<span class="c-name"></span><span class="c-time"></span><span class="c-x" aria-label="remove">✕</span>';
+      chip.querySelector(".c-name").textContent = p.name;
+      chip.querySelector(".c-time").textContent = fmtShort(p.sec);
+      chip.addEventListener("click", function (e) {
+        if (e.target.classList.contains("c-x")) { e.stopPropagation(); removePreset(p.id); return; }
+        loadPreset(p);
+      });
+      presetsEl.appendChild(chip);
+    });
+    var add = document.createElement("button");
+    add.className = "chip add";
+    add.textContent = "＋ save";
+    add.addEventListener("click", openSave);
+    presetsEl.appendChild(add);
+  }
+
+  function loadPreset(p) {
+    setWheel(wheelMin, Math.min(120, Math.floor(p.sec / 60)));
+    setWheel(wheelSec, p.sec % 60);
+  }
+  function removePreset(id) {
+    presets = presets.filter(function (p) { return p.id !== id; });
+    savePresets(); renderPresets();
+  }
+  function openSave() {
+    saverow.classList.add("open");
+    presetName.value = "";
+    setTimeout(function () { presetName.focus(); }, 30);
+  }
+  function closeSave() { saverow.classList.remove("open"); }
+  function commitSave() {
+    var sec = pickedSeconds();
+    if (sec <= 0) { closeSave(); return; }
+    var name = (presetName.value || "").trim() || fmtShort(sec);
+    presets.push({ id: "p" + Date.now(), name: name, sec: sec });
+    savePresets(); renderPresets(); closeSave();
+  }
+  $("presetSave").addEventListener("click", commitSave);
+  $("presetCancel").addEventListener("click", closeSave);
+  presetName.addEventListener("keydown", function (e) {
+    if (e.key === "Enter") commitSave();
+    else if (e.key === "Escape") closeSave();
+  });
+  renderPresets();
+
   // ---------- Timer ----------
   var ring = $("ringProgress");
   var timeText = $("timeText"), timeLabel = $("timeLabel");
@@ -292,7 +419,7 @@
     try { localStorage.setItem("still.dur", String(totalSec)); } catch (e) {}
     remaining = totalSec;
     enterRun();
-    bell(0.7);
+    if (startToneOn) bell(0.7);
     beginTicking();
   }
   function beginTicking() {
@@ -362,6 +489,7 @@
   stopBtn.addEventListener("click", toSetMode);
 
   document.addEventListener("keydown", function (e) {
+    if (e.target && e.target.tagName === "INPUT") return;
     if (e.code === "Space") {
       e.preventDefault(); ensureAudio();
       if (!document.body.classList.contains("run")) start();

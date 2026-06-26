@@ -12,8 +12,13 @@ and tap start.
   wheel. That's the whole interface.
 - **Set a new timer anytime** — when a sit ends or you stop, you're back on
   the wheel; just spin and start again. No reset step.
+- **Named presets** — save the current length with a name, tap a chip to load
+  it back, tap × to remove. Stored locally.
 - **Soft ending bell** — a singing-bowl tone synthesized with the Web Audio
-  API, so there are no sound files to download. Mute it with the bell icon.
+  API, so there are no sound files to download. Mute everything with the bell
+  icon.
+- **Optional start tone** — toggle the bell at the start of a sit on or off
+  independently.
 - **Installable PWA** — add to your home screen; works with the connection
   off entirely.
 - **Keyboard** — `Space` start/pause/resume, `Esc` back to the wheel.
