@@ -1,6 +1,6 @@
 /* dìng — offline service worker.
    Caches the app shell so it launches with no network at all. */
-var CACHE = "ding-v9";
+var CACHE = "ding-v10";
 var ASSETS = [
   "./",
   "./index.html",

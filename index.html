@@ -316,16 +316,33 @@
     });
   } catch (e) {}
 
-  // ---------- Bell (synthesized, no audio files = fully offline) ----------
-  var audioCtx = null;
+  // ---------- Audio engine ----------
+  // We route the *end* bell through Web Audio scheduled on the hardware clock,
+  // played out via a MediaStream <audio> sink. That keeps the audio session
+  // alive while the phone screen is locked, so the bell still rings on time
+  // (a plain setTimeout/audio.play at expiry gets frozen by Android and
+  // degrades to a "click" or silence).
+  var audioCtx = null, audioSink = null, msDest = null;
   function ensureAudio() {
     if (!audioCtx) {
       var AC = window.AudioContext || window.webkitAudioContext;
       if (AC) audioCtx = new AC();
+      if (audioCtx) {
+        try {
+          msDest = audioCtx.createMediaStreamDestination();
+          audioSink = new Audio();
+          audioSink.srcObject = msDest.stream;
+          audioSink.loop = true;
+          document.body.appendChild(audioSink);   // some Androids need it attached
+        } catch (e) { msDest = null; audioSink = null; }
+      }
     }
     if (audioCtx && audioCtx.state === "suspended") audioCtx.resume();
     return audioCtx;
   }
+  // bells connect here: the MediaStream sink (kept alive in background) when
+  // available, otherwise straight to the speakers
+  function outputNode() { return msDest || (audioCtx && audioCtx.destination); }
   function synthBell(strength) {
     var ctx = ensureAudio(); if (!ctx) return;
     var now = ctx.currentTime, g = strength || 1;
@@ -368,41 +385,127 @@
     else if (localStorage.getItem("ding.sound") === "off") currentToneId = "silent";
   } catch (e) {}
 
-  var audioEls = {};
+  function clampVol(s) { return Math.max(0, Math.min(1, s == null ? 1 : s)); }
+
+  // --- decoded tone buffers (for clean, schedulable playback) ---
+  var buffers = {};
+  function decodeTone(t) {                           // -> Promise<AudioBuffer|null>
+    if (!t || !t.src) return Promise.resolve(null);
+    if (buffers[t.id]) return Promise.resolve(buffers[t.id]);
+    var ctx = ensureAudio(); if (!ctx) return Promise.resolve(null);
+    return fetch(t.src).then(function (r) { return r.arrayBuffer(); }).then(function (ab) {
+      return new Promise(function (res) {
+        ctx.decodeAudioData(ab, function (buf) { buffers[t.id] = buf; res(buf); }, function () { res(null); });
+      });
+    }).catch(function () { return null; });
+  }
+
+  // --- HTMLAudio elements: used only for immediate previews / start bell ---
+  var audioEls = {}, nowPlaying = null, nowPlayingNode = null;
   function getAudio(t) {
     if (!t.src) return null;
     if (!audioEls[t.id]) { var a = new Audio(t.src); a.preload = "auto"; audioEls[t.id] = a; }
     return audioEls[t.id];
   }
-  // stop whatever tone is currently sounding so only one ever plays at a time
-  var nowPlaying = null;
+  // stop whatever immediate tone is sounding so only one plays at a time
+  // (the scheduled end bell is tracked separately and not touched here)
   function stopPlaying() {
     if (nowPlaying) { try { nowPlaying.pause(); nowPlaying.currentTime = 0; } catch (e) {} nowPlaying = null; }
+    if (nowPlayingNode) { try { nowPlayingNode.stop(); } catch (e) {} nowPlayingNode = null; }
   }
-  // play the currently selected tone — the single entry point for start + end bells
+  // immediate playback (start bell + cycle preview) — happens in the foreground
   function bell(strength) {
-    stopPlaying();                                  // cut off any tone still ringing
+    stopPlaying();
     var t = toneById(currentToneId);
     if (t.id === "silent" || !t.src) return;
+    var ctx = ensureAudio();
+    if (ctx && buffers[t.id]) {                      // clean Web Audio path if decoded
+      try {
+        var src = ctx.createBufferSource(); src.buffer = buffers[t.id];
+        var g = ctx.createGain(); g.gain.value = clampVol(strength);
+        src.connect(g); g.connect(outputNode()); src.start();
+        nowPlayingNode = src;
+        return;
+      } catch (e) {}
+    }
+    if (ctx) decodeTone(t);                          // warm up for next time
     var a = getAudio(t);
-    try {
-      a.currentTime = 0;
-      a.volume = Math.max(0, Math.min(1, strength == null ? 1 : strength));
-      nowPlaying = a;
-      var pr = a.play();
-      if (pr && pr.catch) pr.catch(function () { synthBell(strength); });
-    } catch (e) { synthBell(strength); }
+    if (a) {
+      try {
+        a.currentTime = 0; a.volume = clampVol(strength); nowPlaying = a;
+        var pr = a.play(); if (pr && pr.catch) pr.catch(function () { synthBell(strength); });
+        return;
+      } catch (e) {}
+    }
+    synthBell(strength);
   }
-  // unlock the audio element inside a user gesture so the end bell can fire later (iOS)
-  function primeTone() {
-    var t = toneById(currentToneId);
-    if (t.id === "silent" || !t.src) return;
-    var a = getAudio(t);
+
+  // --- background keep-alive so the locked-screen scheduled bell still fires ---
+  var keepAliveNode = null, keepStopTimer = null;
+  function startKeepAlive() {
+    var ctx = ensureAudio(); if (!ctx) return;
+    clearTimeout(keepStopTimer);
+    if (audioSink) { var pr = audioSink.play(); if (pr && pr.catch) pr.catch(function () {}); }
+    if (!keepAliveNode) {
+      try {
+        var buf = ctx.createBuffer(1, Math.max(1, Math.floor(ctx.sampleRate * 0.5)), ctx.sampleRate);
+        keepAliveNode = ctx.createBufferSource(); keepAliveNode.buffer = buf; keepAliveNode.loop = true;
+        var g = ctx.createGain(); g.gain.value = 0;       // inaudible, just keeps the graph active
+        keepAliveNode.connect(g); g.connect(outputNode());
+        keepAliveNode.start();
+      } catch (e) {}
+    }
+    setMediaSession(true);
+  }
+  function stopKeepAlive() {
+    clearTimeout(keepStopTimer);
+    if (keepAliveNode) { try { keepAliveNode.stop(); } catch (e) {} keepAliveNode = null; }
+    if (audioSink) { try { audioSink.pause(); } catch (e) {} }
+    setMediaSession(false);
+  }
+  var mediaActionsSet = false;
+  function setMediaSession(playing) {
+    if (!("mediaSession" in navigator)) return;
     try {
-      a.volume = 0;
-      var pr = a.play();
-      if (pr && pr.then) pr.then(function () { a.pause(); a.currentTime = 0; a.volume = 1; }).catch(function () {});
+      if (playing) {
+        if (!navigator.mediaSession.metadata && window.MediaMetadata) {
+          navigator.mediaSession.metadata = new MediaMetadata({ title: "dìng", artist: "meditation timer" });
+        }
+        if (!mediaActionsSet) {
+          mediaActionsSet = true;
+          navigator.mediaSession.setActionHandler("pause", function () { if (running) pause(); });
+          navigator.mediaSession.setActionHandler("play", function () { if (!running && remaining > 0) resume(); });
+          navigator.mediaSession.setActionHandler("stop", function () { toSetMode(); });
+        }
+      }
+      navigator.mediaSession.playbackState = playing ? "playing" : "none";
     } catch (e) {}
+  }
+
+  // --- schedule the END bell on the audio clock (survives screen lock) ---
+  var scheduled = null;
+  function scheduleEndBell(sec) {
+    cancelScheduled();
+    var t = toneById(currentToneId);
+    if (t.id === "silent" || !t.src) return;          // nothing to ring; no keep-alive needed
+    var ctx = ensureAudio(); if (!ctx) return;
+    startKeepAlive();
+    var fireAt = ctx.currentTime + Math.max(0, sec), token = {};
+    scheduled = { token: token, node: null, ok: false };
+    decodeTone(t).then(function (buf) {
+      if (!scheduled || scheduled.token !== token || !buf) return;   // cancelled / failed
+      try {
+        var src = ctx.createBufferSource(); src.buffer = buf;
+        var g = ctx.createGain(); g.gain.value = 1;
+        src.connect(g); g.connect(outputNode());
+        src.start(Math.max(ctx.currentTime + 0.02, fireAt));
+        scheduled.node = src; scheduled.ok = true;
+      } catch (e) {}
+    });
+  }
+  function cancelScheduled() {
+    if (scheduled && scheduled.node) { try { scheduled.node.stop(); } catch (e) {} }
+    scheduled = null;
   }
 
   var toneBtn = $("toneBtn"), toneName = $("toneName"), toneNameTimer = null;
@@ -653,7 +756,8 @@
     try { localStorage.setItem("ding.dur", String(totalSec)); } catch (e) {}
     remaining = totalSec;
     enterRun();
-    if (startToneOn) bell(0.7); else primeTone();   // play start bell, or just unlock audio for the end bell
+    if (startToneOn) bell(0.7);                      // immediate start bell (foreground)
+    scheduleEndBell(remaining);                      // end bell scheduled on the audio clock (survives lock)
     beginTicking();
   }
   function beginTicking() {
@@ -671,6 +775,7 @@
     goBtn.textContent = "RESUME";
     timeLabel.textContent = "paused";
     clearInterval(ticker); ticker = null;
+    cancelScheduled(); stopKeepAlive();
   }
   function resume() {
     if (remaining <= 0) return;
@@ -679,6 +784,7 @@
     timeLabel.textContent = "";
     running = true;
     endAt = Date.now() + remaining * 1000;
+    scheduleEndBell(remaining);                      // re-arm the audio-clock bell
     tick();
     ticker = setInterval(tick, 200);
   }
@@ -691,7 +797,11 @@
     running = false;
     clearInterval(ticker); ticker = null;
     document.body.classList.remove("running");
-    bell(1);
+    // end bell was scheduled on the audio clock; only ring here if that wasn't
+    // available, so we never double-ring. Do NOT cancel the scheduled node —
+    // clock drift could stop it a hair before it fires.
+    if (!(scheduled && scheduled.ok)) bell(1);
+    keepStopTimer = setTimeout(stopKeepAlive, 15000);  // let it ring out, then release audio focus
     timeText.textContent = "0:00";
     timeLabel.textContent = "complete";
     goBtn.textContent = "DONE";
@@ -707,6 +817,7 @@
   function toSetMode() {
     running = false;
     clearInterval(ticker); ticker = null;
+    cancelScheduled(); stopKeepAlive();
     document.body.classList.remove("run", "running");
     goBtn.classList.remove("go-run");
     goBtn.textContent = "START";
