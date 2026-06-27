@@ -336,7 +336,7 @@
     <span class="tip" id="tip" role="tooltip">
       <p><strong>Install:</strong> add this page to your home screen to save it as an app on your device.</p>
       <p><strong>Heads-up:</strong> the end bell is scheduled to ring even with the screen locked, but a phone's battery-saver / Doze mode can still delay it until you wake the device. For a critical sit, keep the screen on or plugged in.</p>
-      <span class="ver">dìng · v1.0.5</span>
+      <span class="ver">dìng · v1.0.6</span>
     </span>
   </footer>
 
@@ -368,46 +368,53 @@
     if (diagOpen) renderDiag();
   }
   function diagTick(tag) {
-    var ta = timerAudio;
+    // ct = AudioContext.currentTime (the audio clock). If this keeps advancing
+    // in the background, the buffer playhead is advancing and the baked-in bell
+    // will fire; if it freezes, the context was suspended.
     diagPush({
       ev: tag || "tick",
-      ct: ta && isFinite(ta.currentTime) ? +ta.currentTime.toFixed(3) : null,
-      paused: ta ? ta.paused : null,
+      ct: audioCtx && isFinite(audioCtx.currentTime) ? +audioCtx.currentTime.toFixed(3) : null,
+      state: audioCtx ? audioCtx.state : null,
+      paused: audioSink ? audioSink.paused : null,
       vis: document.visibilityState
-    });
-  }
-  // attach a one-time loadedmetadata logger to the timer media element so we
-  // capture the actual blob duration once it's known
-  function diagAttachMeta() {
-    var ta = timerAudio;
-    if (!ta || ta.__diagMeta) return; ta.__diagMeta = true;
-    ta.addEventListener("loadedmetadata", function () {
-      diagPush({ ev: "meta", dur: isFinite(ta.duration) ? +ta.duration.toFixed(3) : null });
     });
   }
 
   // ---------- Audio engine ----------
-  // Reliability strategy: the *end* bell can't depend on JS or the Web Audio
-  // clock running in the background — Android/Chrome freezes timers and
-  // suspends the AudioContext when the tab is hidden or the screen is locked.
-  // Instead, the moment the timer starts we build a single real media file
-  // (silence for the duration, then the bell) and play it through an <audio>
-  // element. Chrome keeps an actively-playing media element running through
-  // lock and tab-switches (like a podcast), so the bell rings on time with no
-  // JS needed at the moment it fires.
+  // Background reliability (v1.0.6): the bell is BAKED INTO a single Web Audio
+  // buffer (sub-perceptual dither for the whole remaining duration, then the
+  // real bell samples at the end offset) and played with one
+  // AudioBufferSourceNode.start(0). The bell sounds when the playhead reaches
+  // its offset — on the audio thread, with NO main-thread JS at fire time. The
+  // continuous dither keeps the element/stream decode alive past Chrome's ~60s
+  // background cap; the buffer is routed through a MediaStreamDestination -> an
+  // <audio> sink (the media playback that survives lock/tab-switch). The
+  // AudioContext is resumed on every tick + visibilitychange as backup.
   //
-  // The AudioContext below is used only for decoding tones and for immediate
-  // foreground sounds (start bell + cycle previews).
-  var audioCtx = null;
+  // ctx.destination is used directly only for immediate foreground sounds
+  // (start bell + cycle previews) and for decoding tones.
+  var audioCtx = null, msDest = null, audioSink = null;
   function ensureAudio() {
     if (!audioCtx) {
       var AC = window.AudioContext || window.webkitAudioContext;
       if (AC) audioCtx = new AC();
+      if (audioCtx) {
+        try {
+          if (audioCtx.createMediaStreamDestination) {
+            msDest = audioCtx.createMediaStreamDestination();
+            audioSink = new Audio();
+            audioSink.srcObject = msDest.stream;
+            audioSink.loop = true;
+            document.body.appendChild(audioSink);   // the background-surviving media playback
+          }
+        } catch (e) { msDest = null; audioSink = null; }
+      }
     }
     if (audioCtx && audioCtx.state === "suspended") audioCtx.resume();
     return audioCtx;
   }
-  function outputNode() { return audioCtx && audioCtx.destination; }
+  function outputNode() { return audioCtx && audioCtx.destination; }   // immediate foreground sounds
+  function outputBg() { return msDest || (audioCtx && audioCtx.destination); }  // background timer buffer
   function synthBell(strength) {
     var ctx = ensureAudio(); if (!ctx) return;
     var now = ctx.currentTime, g = strength || 1;
@@ -538,116 +545,99 @@
     } catch (e) {}
   }
 
-  // --- Background audio architecture (v1.0.5) ---
-  // Root cause (proven by v1.0.4-diag logs): Chrome on Android suspends an
-  // <audio> element's DECODE at the ~60s background cap even though the
-  // MediaSession card stays alive — a long, mostly-silent blob freezes at ~62s
-  // and never reaches the bell. Fix: play a short LOOPING carrier of
-  // sub-perceptual dither (±1 LSB, ~-90 dBFS, inaudible) so the element always
-  // outputs nonzero frames and its decode is never suspended. The carrier is
-  // NOT the bell and NOT the timing source. The bell fires from a wall-clock
-  // target via Web Audio (on time if the context survives) with an element
-  // play() fallback — whichever fires first, guarded to ring once.
-  var timerAudio = null;                 // carrier element (reused to play the bell on fallback)
-  function getTimerAudio() {
-    if (!timerAudio) { timerAudio = new Audio(); timerAudio.preload = "auto"; document.body.appendChild(timerAudio); }
-    return timerAudio;
+  // --- Background audio architecture (v1.0.6): bell baked into the buffer ---
+  // The bell is NOT triggered by JS. We build ONE AudioBuffer = sub-perceptual
+  // dither for the whole remaining duration, with the real bell samples written
+  // at offset floor(remaining*rate), and play it with a single
+  // AudioBufferSourceNode.start(0). The bell sounds when the playhead reaches
+  // its offset, on the audio thread, with zero main-thread JS at fire time. The
+  // continuous dither keeps the stream's decode alive past the ~60s background
+  // cap; routing through MediaStreamDestination -> <audio> sink is the playback
+  // that survives lock/tab-switch. ctx is resumed on tick/visibilitychange.
+  var bgSource = null, bgMarker = null, bellFired = false;
+
+  // AudioBuffer is Float32 internally (4 bytes/sample). Lower the rate for long
+  // sits to keep the buffer under ~90 MB. Dither has no frequency content to
+  // preserve; the bell shares the rate (acceptably warmer on long sits).
+  function pickRate(sec) {
+    var BUDGET = 22.5e6, rates = [44100, 22050, 16000, 11025, 8000, 6000];   // ~90 MB Float32 mono
+    for (var i = 0; i < rates.length; i++) if ((sec + 35) * rates[i] <= BUDGET) return rates[i];
+    return 6000;
   }
-  function wavHeader(dv, n, rate) {
-    function wr(o, s) { for (var i = 0; i < s.length; i++) dv.setUint8(o + i, s.charCodeAt(i)); }
-    wr(0, "RIFF"); dv.setUint32(4, 36 + n * 2, true); wr(8, "WAVE"); wr(12, "fmt ");
-    dv.setUint32(16, 16, true); dv.setUint16(20, 1, true); dv.setUint16(22, 1, true);
-    dv.setUint32(24, rate, true); dv.setUint32(28, rate * 2, true); dv.setUint16(32, 2, true); dv.setUint16(34, 16, true);
-    wr(36, "data"); dv.setUint32(40, n * 2, true);
-  }
-  var carrierUrl = null;
-  function carrierWavUrl() {              // ~4s loop of ±1 LSB dither — inaudible, never silent
-    if (carrierUrl) return carrierUrl;
-    var rate = 8000, n = rate * 4, ab = new ArrayBuffer(44 + n * 2), dv = new DataView(ab);
-    wavHeader(dv, n, rate);
-    var pcm = new Int16Array(ab, 44, n);
-    for (var i = 0; i < n; i++) pcm[i] = (i & 1) ? 1 : -1;
-    carrierUrl = URL.createObjectURL(new Blob([ab], { type: "audio/wav" }));
-    return carrierUrl;
-  }
-  function bellWavUrl(buf) {              // short bell-only WAV for the element fallback
-    var rate = Math.min(buf.sampleRate || 44100, 22050), n = Math.max(1, Math.ceil(buf.duration * rate));
-    var ab = new ArrayBuffer(44 + n * 2), dv = new DataView(ab); wavHeader(dv, n, rate);
-    var pcm = new Int16Array(ab, 44, n), ratio = (buf.sampleRate || 44100) / rate;
-    var ch = buf.numberOfChannels, d0 = buf.getChannelData(0), d1 = ch > 1 ? buf.getChannelData(1) : null;
-    for (var i = 0; i < n; i++) {
-      var si = i * ratio, i0 = si | 0, f = si - i0;
-      var s = (d0[i0] || 0) + ((d0[i0 + 1] || 0) - (d0[i0] || 0)) * f;
-      if (d1) { var t0 = d1[i0] || 0, t1 = d1[i0 + 1] || 0; s = (s + (t0 + (t1 - t0) * f)) * 0.5; }
-      var v = s * 32767; pcm[i] = v > 32767 ? 32767 : v < -32768 ? -32768 : v | 0;
+  // bellOffsetsSec is an array so interval-bells become a one-line change later.
+  function buildTimerBuffer(bellOffsetsSec, buf, rate) {
+    var bellLen = Math.ceil(buf.duration * rate);
+    var offs = [], maxOff = 0;
+    for (var k = 0; k < bellOffsetsSec.length; k++) { var o = Math.floor(bellOffsetsSec[k] * rate); offs.push(o); if (o > maxOff) maxOff = o; }
+    var n = Math.max(1, maxOff + bellLen);
+    var out = audioCtx.createBuffer(1, n, rate);
+    var ch = out.getChannelData(0);
+    // fill the whole buffer with ±1 LSB dither (≈ -90 dBFS, inaudible, never silent)
+    var d = 1 / 32768, CH = 4096, pat = new Float32Array(CH);
+    for (var i = 0; i < CH; i++) pat[i] = (i & 1) ? d : -d;
+    for (var p = 0; p < n; p += CH) ch.set(pat.subarray(0, Math.min(CH, n - p)), p);
+    // write the real bell at each offset (linear resample from the decoded buffer)
+    var ratio = (buf.sampleRate || 44100) / rate, nb = buf.numberOfChannels;
+    var b0 = buf.getChannelData(0), b1 = nb > 1 ? buf.getChannelData(1) : null;
+    for (var m2 = 0; m2 < offs.length; m2++) {
+      var off = offs[m2];
+      for (var j = 0; j < bellLen; j++) {
+        var si = j * ratio, i0 = si | 0, f = si - i0;
+        var s = (b0[i0] || 0) + ((b0[i0 + 1] || 0) - (b0[i0] || 0)) * f;
+        if (b1) { var t0 = b1[i0] || 0, t1 = b1[i0 + 1] || 0; s = (s + (t0 + (t1 - t0) * f)) * 0.5; }
+        var oo = off + j; if (oo < n) ch[oo] = s;
+      }
     }
-    return URL.createObjectURL(new Blob([ab], { type: "audio/wav" }));
+    return { buffer: out, offsets: offs, rate: rate };
   }
 
-  var bellTargetMs = 0, bellFired = false, waBellSrc = null, waMarker = null, bellUrl = null, bellTimer = null;
-  var BELL_GRACE = 600;                   // ms head start for the on-time Web Audio path before the element fallback
-
+  // returns true if the background buffer is armed (handling the bell), else
+  // "silent" (no bell) or false (couldn't build — caller may foreground-fallback)
   function startBackgroundBell(sec) {
     stopBackgroundBell();
     var t = toneById(currentToneId);
     if (t.id === "silent" || !t.src) { mediaSessionStopped(); return "silent"; }
-    var ctx = ensureAudio(), buf = buffers[t.id];
+    var ctx = ensureAudio(); if (!ctx) return false;
+    var buf = buffers[t.id];
+    if (!buf) { decodeTone(t); return false; }     // not decoded yet; foreground fallback at finish
     bellFired = false;
-    bellTargetMs = Date.now() + sec * 1000;
-    // 1) looping carrier keeps the media element's decode alive past the 60s cap
-    initMediaSession();
-    var ta = getTimerAudio();
-    try { ta.loop = true; ta.src = carrierWavUrl(); ta.currentTime = 0; var pc = ta.play(); if (pc && pc.catch) pc.catch(function () {}); } catch (e) {}
-    // 2) element-fallback bell blob
-    if (bellUrl) { try { URL.revokeObjectURL(bellUrl); } catch (e) {} bellUrl = null; }
-    if (buf) { try { bellUrl = bellWavUrl(buf); } catch (e) { bellUrl = null; } } else { decodeTone(t); }
-    // 3) Web Audio scheduled bell on the audio clock (rings on time if ctx survives bg)
-    if (ctx && buf) {
+    try {
+      var built = buildTimerBuffer([sec], buf, pickRate(sec));   // bellOffsetsSec = [sec]
+      initMediaSession();
+      if (audioSink) { try { var ps = audioSink.play(); if (ps && ps.catch) ps.catch(function () {}); } catch (e) {} }
+      bgSource = ctx.createBufferSource();
+      bgSource.buffer = built.buffer;
+      bgSource.connect(outputBg());                 // -> MediaStream sink (survives bg), else speakers
+      bgSource.onended = function () { try { if (audioSink) audioSink.pause(); } catch (e) {} mediaSessionStopped(); };
+      bgSource.start(0);
+      // observation-only marker at the bell onset (log may lag in bg; audio is source of truth)
       try {
-        var when = ctx.currentTime + sec;
-        waBellSrc = ctx.createBufferSource(); waBellSrc.buffer = buf;
-        var g = ctx.createGain(); g.gain.value = 1; waBellSrc.connect(g); g.connect(ctx.destination);
-        waBellSrc.start(when);
-        var m = ctx.createBufferSource();           // silent marker → detect that the WA bell actually fired
-        m.buffer = ctx.createBuffer(1, Math.max(1, Math.floor(ctx.sampleRate * 0.05)), ctx.sampleRate);
-        m.connect(ctx.destination); m.onended = function () { onBellFired("webaudio"); };
-        m.start(when); waMarker = m;
+        var onset = built.offsets[0] / built.rate;
+        bgMarker = ctx.createBufferSource();
+        bgMarker.buffer = ctx.createBuffer(1, Math.max(1, Math.floor(ctx.sampleRate * 0.05)), ctx.sampleRate);
+        bgMarker.connect(outputBg());
+        bgMarker.onended = function () { if (!bellFired) { bellFired = true; diagBell("buffer"); } };
+        bgMarker.start(ctx.currentTime + onset);
       } catch (e) {}
-    }
-    // 4) JS backup (the interval tick is the other fallback path)
-    bellTimer = setTimeout(function () { fireBellViaElement("timeout"); }, sec * 1000 + BELL_GRACE + 50);
-    return buf ? true : false;
-  }
-  function onBellFired(reason) {           // Web Audio path produced the sound
-    if (bellFired) return; bellFired = true;
-    try { if (timerAudio) timerAudio.pause(); } catch (e) {}   // carrier no longer needed
-    diagBell(reason);
-  }
-  function fireBellViaElement(reason) {    // fallback: ring through the (kept-alive) media element
-    if (bellFired) return; bellFired = true;
-    try { if (waBellSrc) waBellSrc.stop(); } catch (e) {}
-    var rang = false;
-    if (bellUrl) {
-      try {
-        var ta = getTimerAudio();
-        ta.loop = false; ta.src = bellUrl; ta.currentTime = 0;
-        var p = ta.play(); if (p && p.catch) p.catch(function () {}); rang = true;
-      } catch (e) {}
-    }
-    if (!rang) bell(1);                    // last resort: immediate foreground path
-    diagBell(reason);
+      return true;
+    } catch (e) { return false; }
   }
   function stopBackgroundBell() {
-    if (bellTimer) { clearTimeout(bellTimer); bellTimer = null; }
-    try { if (waBellSrc) waBellSrc.stop(); } catch (e) {} waBellSrc = null;
-    try { if (waMarker) { waMarker.onended = null; waMarker.stop(); } } catch (e) {} waMarker = null;
-    if (timerAudio) { try { timerAudio.pause(); } catch (e) {} }
+    if (bgSource) { try { bgSource.onended = null; bgSource.stop(); } catch (e) {} bgSource = null; }
+    if (bgMarker) { try { bgMarker.onended = null; bgMarker.stop(); } catch (e) {} bgMarker = null; }
+    if (audioSink) { try { audioSink.pause(); } catch (e) {} }
     mediaSessionStopped();
+  }
+  // backup only: nudge the context back to running if the OS throttled it
+  function keepContextAlive() {
+    if (audioCtx && audioCtx.state !== "running") { try { audioCtx.resume(); } catch (e) {} }
+    if (audioSink && audioSink.paused && bgSource) { try { var p = audioSink.play(); if (p && p.catch) p.catch(function () {}); } catch (e) {} }
   }
   function diagBell(reason) {
     diagPush({ ev: "bell", reason: reason,
-               carrierPaused: timerAudio ? timerAudio.paused : null,
-               carrierCt: timerAudio && isFinite(timerAudio.currentTime) ? +timerAudio.currentTime.toFixed(3) : null });
+               state: audioCtx ? audioCtx.state : null,
+               ctxTime: audioCtx && isFinite(audioCtx.currentTime) ? +audioCtx.currentTime.toFixed(3) : null,
+               sinkPaused: audioSink ? audioSink.paused : null });
   }
 
   var toneBtn = $("toneBtn"), toneName = $("toneName"), toneNameTimer = null;
@@ -891,6 +881,7 @@
   ring.style.strokeDasharray = CIRC;
 
   var totalSec = lastDur, remaining = lastDur, endAt = 0, running = false, ticker = null;
+  var bgArmed = false;   // true when the background buffer is handling the bell
 
   function fmt(sec) {
     sec = Math.max(0, Math.round(sec));
@@ -910,8 +901,8 @@
     remaining = totalSec;
     enterRun();
     if (startToneOn) bell(0.7);                      // immediate start bell (foreground)
-    var bgState = startBackgroundBell(remaining);    // carrier + wall-clock-scheduled bell (survives lock)
-    diagAttachMeta();
+    var bgState = startBackgroundBell(remaining);    // bell baked into the played buffer (survives lock)
+    bgArmed = bgState === true;
     diagPush({ ev: "start", tone: currentToneId, totalSec: totalSec, bellAtSec: remaining, bg: bgState });
     beginTicking();
   }
@@ -939,31 +930,33 @@
     timeLabel.textContent = "";
     running = true;
     endAt = Date.now() + remaining * 1000;
-    var bgState = startBackgroundBell(remaining);     // re-arm carrier + scheduled bell for the new remaining
-    diagAttachMeta();
+    var bgState = startBackgroundBell(remaining);     // re-arm the baked-in bell buffer for the new remaining
+    bgArmed = bgState === true;
     diagPush({ ev: "resume", bellAtSec: remaining, bg: bgState });
     tick();
     ticker = setInterval(tick, 200);
   }
   function tick() {
     remaining = (endAt - Date.now()) / 1000;
-    diagTick();                                     // observation: log carrier currentTime/paused/vis each tick
+    diagTick();                                     // observation: log ctx state / currentTime / vis each tick
     updatePositionState();                          // keep the MediaSession fresh
-    // fallback ring: if the on-time Web Audio path didn't fire within the grace window
-    if (running && !bellFired && Date.now() >= bellTargetMs + BELL_GRACE) fireBellViaElement("tick");
+    keepContextAlive();                             // backup: resume ctx if the OS throttled it
     if (remaining <= 0) { remaining = 0; renderRing(); finish(); return; }
     renderRing();
   }
   function finish() {
     running = false;
     clearInterval(ticker); ticker = null;
-    diagPush({ ev: "finish", ct: timerAudio && isFinite(timerAudio.currentTime) ? +timerAudio.currentTime.toFixed(3) : null,
-               paused: timerAudio ? timerAudio.paused : null, bellFired: bellFired, vis: document.visibilityState });
+    diagPush({ ev: "finish", state: audioCtx ? audioCtx.state : null,
+               ct: audioCtx && isFinite(audioCtx.currentTime) ? +audioCtx.currentTime.toFixed(3) : null,
+               bgArmed: bgArmed, vis: document.visibilityState });
     document.body.classList.remove("running");
-    // the bell is fired by the scheduled paths (Web Audio on-time / element
-    // fallback / setTimeout backup); don't ring here — that would risk a double
-    // ring against the on-time Web Audio path. The carrier/scheduling is torn
-    // down on toSetMode (or when the bell rings and the carrier is swapped out).
+    // the bell is baked into the playing buffer and rings itself at its offset —
+    // do NOT ring here (would double). Only fall back to a foreground ring if the
+    // background buffer never armed (e.g. tone wasn't decoded / build failed).
+    if (!bgArmed) bell(1);
+    // leave bgSource playing so the baked-in bell + tail completes; it cleans up
+    // on its own onended, or on toSetMode.
     timeText.textContent = "0:00";
     timeLabel.textContent = "complete";
     goBtn.textContent = "DONE";
@@ -1009,7 +1002,8 @@
   });
 
   document.addEventListener("visibilitychange", function () {
-    if (running) diagTick("vis:" + document.visibilityState);   // boundary record around lock/unlock
+    if (bgSource) keepContextAlive();                           // nudge ctx back to running across lock/unlock
+    if (running || bgSource) diagTick("vis:" + document.visibilityState);  // boundary record
     if (!document.hidden && running) tick();
   });
 
