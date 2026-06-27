@@ -336,7 +336,7 @@
     <span class="tip" id="tip" role="tooltip">
       <p><strong>Install:</strong> add this page to your home screen to save it as an app on your device.</p>
       <p><strong>Heads-up:</strong> the end bell is scheduled to ring even with the screen locked, but a phone's battery-saver / Doze mode can still delay it until you wake the device. For a critical sit, keep the screen on or plugged in.</p>
-      <span class="ver">dìng · v1.0.4-diag</span>
+      <span class="ver">dìng · v1.0.5</span>
     </span>
   </footer>
 
@@ -507,89 +507,147 @@
 
   // --- MediaSession (so the OS treats the timer as real background playback) ---
   var mediaActionsSet = false;
-  function setMediaSession(playing) {
+  function initMediaSession() {
     if (!("mediaSession" in navigator)) return;
     try {
-      if (playing) {
-        if (!navigator.mediaSession.metadata && window.MediaMetadata) {
-          navigator.mediaSession.metadata = new MediaMetadata({ title: "dìng", artist: "meditation timer" });
-        }
-        if (!mediaActionsSet) {
-          mediaActionsSet = true;
-          navigator.mediaSession.setActionHandler("pause", function () { if (running) pause(); });
-          navigator.mediaSession.setActionHandler("play", function () { if (!running && remaining > 0) resume(); });
-          navigator.mediaSession.setActionHandler("stop", function () { toSetMode(); });
-        }
+      // set metadata + handlers BEFORE the first play() so the session is fully
+      // formed when the carrier starts (stale/late setup can be reclaimed)
+      if (window.MediaMetadata && !navigator.mediaSession.metadata) {
+        navigator.mediaSession.metadata = new MediaMetadata({ title: "dìng", artist: "meditation timer" });
       }
-      navigator.mediaSession.playbackState = playing ? "playing" : "none";
+      if (!mediaActionsSet) {
+        mediaActionsSet = true;
+        navigator.mediaSession.setActionHandler("pause", function () { if (running) pause(); });
+        navigator.mediaSession.setActionHandler("play", function () { if (!running && remaining > 0) resume(); });
+        navigator.mediaSession.setActionHandler("stop", function () { toSetMode(); });
+      }
+      navigator.mediaSession.playbackState = "playing";
+    } catch (e) {}
+  }
+  function mediaSessionStopped() {
+    if (!("mediaSession" in navigator)) return;
+    try { navigator.mediaSession.playbackState = "none"; } catch (e) {}
+  }
+  // keep the session fresh every tick — stale position state can trigger
+  // reclamation on some Chrome builds even when the card is visible
+  function updatePositionState() {
+    if (!("mediaSession" in navigator) || !navigator.mediaSession.setPositionState) return;
+    try {
+      var dur = Math.max(0.001, totalSec), pos = Math.min(dur, Math.max(0, totalSec - remaining));
+      navigator.mediaSession.setPositionState({ duration: dur, position: pos, playbackRate: 1 });
     } catch (e) {}
   }
 
-  // --- the timer's reliable background bell, as a generated media file ---
-  var timerAudio = null;
+  // --- Background audio architecture (v1.0.5) ---
+  // Root cause (proven by v1.0.4-diag logs): Chrome on Android suspends an
+  // <audio> element's DECODE at the ~60s background cap even though the
+  // MediaSession card stays alive — a long, mostly-silent blob freezes at ~62s
+  // and never reaches the bell. Fix: play a short LOOPING carrier of
+  // sub-perceptual dither (±1 LSB, ~-90 dBFS, inaudible) so the element always
+  // outputs nonzero frames and its decode is never suspended. The carrier is
+  // NOT the bell and NOT the timing source. The bell fires from a wall-clock
+  // target via Web Audio (on time if the context survives) with an element
+  // play() fallback — whichever fires first, guarded to ring once.
+  var timerAudio = null;                 // carrier element (reused to play the bell on fallback)
   function getTimerAudio() {
-    if (!timerAudio) {
-      timerAudio = new Audio();
-      timerAudio.preload = "auto";
-      document.body.appendChild(timerAudio);
-      timerAudio.addEventListener("ended", function () { setMediaSession(false); });
-    }
+    if (!timerAudio) { timerAudio = new Audio(); timerAudio.preload = "auto"; document.body.appendChild(timerAudio); }
     return timerAudio;
   }
-  // keep the generated file's memory bounded (~50 MB): lower the sample rate for
-  // longer sits. Short sits get full quality.
-  function pickRate(sec) {
-    var budget = 50 * 1024 * 1024, rates = [22050, 16000, 11025, 8000, 6000, 4000];
-    for (var i = 0; i < rates.length; i++) if ((sec + 35) * rates[i] * 2 <= budget) return rates[i];
-    return 4000;
-  }
-  // build a 16-bit mono WAV: `sec` seconds of silence, then the bell
-  function buildTimerWav(sec, buf, rate) {
-    var bellLen = Math.ceil(buf.duration * rate);
-    var n = Math.max(1, Math.floor(sec * rate) + bellLen);
-    var ab = new ArrayBuffer(44 + n * 2), dv = new DataView(ab);
-    function wr(off, s) { for (var i = 0; i < s.length; i++) dv.setUint8(off + i, s.charCodeAt(i)); }
+  function wavHeader(dv, n, rate) {
+    function wr(o, s) { for (var i = 0; i < s.length; i++) dv.setUint8(o + i, s.charCodeAt(i)); }
     wr(0, "RIFF"); dv.setUint32(4, 36 + n * 2, true); wr(8, "WAVE"); wr(12, "fmt ");
     dv.setUint32(16, 16, true); dv.setUint16(20, 1, true); dv.setUint16(22, 1, true);
-    dv.setUint32(24, rate, true); dv.setUint32(28, rate * 2, true);
-    dv.setUint16(32, 2, true); dv.setUint16(34, 16, true);
+    dv.setUint32(24, rate, true); dv.setUint32(28, rate * 2, true); dv.setUint16(32, 2, true); dv.setUint16(34, 16, true);
     wr(36, "data"); dv.setUint32(40, n * 2, true);
-    var pcm = new Int16Array(ab, 44, n);              // zero-filled = silence
-    var off = Math.floor(sec * rate), ratio = buf.sampleRate / rate;
+  }
+  var carrierUrl = null;
+  function carrierWavUrl() {              // ~4s loop of ±1 LSB dither — inaudible, never silent
+    if (carrierUrl) return carrierUrl;
+    var rate = 8000, n = rate * 4, ab = new ArrayBuffer(44 + n * 2), dv = new DataView(ab);
+    wavHeader(dv, n, rate);
+    var pcm = new Int16Array(ab, 44, n);
+    for (var i = 0; i < n; i++) pcm[i] = (i & 1) ? 1 : -1;
+    carrierUrl = URL.createObjectURL(new Blob([ab], { type: "audio/wav" }));
+    return carrierUrl;
+  }
+  function bellWavUrl(buf) {              // short bell-only WAV for the element fallback
+    var rate = Math.min(buf.sampleRate || 44100, 22050), n = Math.max(1, Math.ceil(buf.duration * rate));
+    var ab = new ArrayBuffer(44 + n * 2), dv = new DataView(ab); wavHeader(dv, n, rate);
+    var pcm = new Int16Array(ab, 44, n), ratio = (buf.sampleRate || 44100) / rate;
     var ch = buf.numberOfChannels, d0 = buf.getChannelData(0), d1 = ch > 1 ? buf.getChannelData(1) : null;
-    for (var i = 0; i < bellLen; i++) {              // resample (linear) the bell into the tail
+    for (var i = 0; i < n; i++) {
       var si = i * ratio, i0 = si | 0, f = si - i0;
       var s = (d0[i0] || 0) + ((d0[i0 + 1] || 0) - (d0[i0] || 0)) * f;
       if (d1) { var t0 = d1[i0] || 0, t1 = d1[i0 + 1] || 0; s = (s + (t0 + (t1 - t0) * f)) * 0.5; }
-      var o = off + i;
-      if (o < n) { var v = s * 32767; pcm[o] = v > 32767 ? 32767 : v < -32768 ? -32768 : v | 0; }
+      var v = s * 32767; pcm[i] = v > 32767 ? 32767 : v < -32768 ? -32768 : v | 0;
     }
-    return new Blob([ab], { type: "audio/wav" });
+    return URL.createObjectURL(new Blob([ab], { type: "audio/wav" }));
   }
-  // start (or restart) the background bell media for `sec` seconds.
-  // returns true if real media is handling the end bell.
-  function startTimerMedia(sec) {
+
+  var bellTargetMs = 0, bellFired = false, waBellSrc = null, waMarker = null, bellUrl = null, bellTimer = null;
+  var BELL_GRACE = 600;                   // ms head start for the on-time Web Audio path before the element fallback
+
+  function startBackgroundBell(sec) {
+    stopBackgroundBell();
     var t = toneById(currentToneId);
-    if (t.id === "silent" || !t.src) { stopTimerMedia(); return "silent"; }
+    if (t.id === "silent" || !t.src) { mediaSessionStopped(); return "silent"; }
     var ctx = ensureAudio(), buf = buffers[t.id];
-    if (!ctx || !buf) { decodeTone(t); return false; }   // not decoded yet — fall back this once
-    try {
-      var url = URL.createObjectURL(buildTimerWav(sec, buf, pickRate(sec)));
-      var ta = getTimerAudio();
-      if (ta.__url) { try { URL.revokeObjectURL(ta.__url); } catch (e) {} }
-      ta.__url = url; ta.src = url; ta.loop = false; ta.currentTime = 0;
-      var p = ta.play(); if (p && p.catch) p.catch(function () {});
-      setMediaSession(true);
-      return true;
-    } catch (e) { return false; }
-  }
-  function stopTimerMedia() {
-    if (timerAudio) {
-      try { timerAudio.pause(); } catch (e) {}
-      if (timerAudio.__url) { try { URL.revokeObjectURL(timerAudio.__url); } catch (e) {} timerAudio.__url = null; }
-      try { timerAudio.removeAttribute("src"); timerAudio.load(); } catch (e) {}
+    bellFired = false;
+    bellTargetMs = Date.now() + sec * 1000;
+    // 1) looping carrier keeps the media element's decode alive past the 60s cap
+    initMediaSession();
+    var ta = getTimerAudio();
+    try { ta.loop = true; ta.src = carrierWavUrl(); ta.currentTime = 0; var pc = ta.play(); if (pc && pc.catch) pc.catch(function () {}); } catch (e) {}
+    // 2) element-fallback bell blob
+    if (bellUrl) { try { URL.revokeObjectURL(bellUrl); } catch (e) {} bellUrl = null; }
+    if (buf) { try { bellUrl = bellWavUrl(buf); } catch (e) { bellUrl = null; } } else { decodeTone(t); }
+    // 3) Web Audio scheduled bell on the audio clock (rings on time if ctx survives bg)
+    if (ctx && buf) {
+      try {
+        var when = ctx.currentTime + sec;
+        waBellSrc = ctx.createBufferSource(); waBellSrc.buffer = buf;
+        var g = ctx.createGain(); g.gain.value = 1; waBellSrc.connect(g); g.connect(ctx.destination);
+        waBellSrc.start(when);
+        var m = ctx.createBufferSource();           // silent marker → detect that the WA bell actually fired
+        m.buffer = ctx.createBuffer(1, Math.max(1, Math.floor(ctx.sampleRate * 0.05)), ctx.sampleRate);
+        m.connect(ctx.destination); m.onended = function () { onBellFired("webaudio"); };
+        m.start(when); waMarker = m;
+      } catch (e) {}
     }
-    setMediaSession(false);
+    // 4) JS backup (the interval tick is the other fallback path)
+    bellTimer = setTimeout(function () { fireBellViaElement("timeout"); }, sec * 1000 + BELL_GRACE + 50);
+    return buf ? true : false;
+  }
+  function onBellFired(reason) {           // Web Audio path produced the sound
+    if (bellFired) return; bellFired = true;
+    try { if (timerAudio) timerAudio.pause(); } catch (e) {}   // carrier no longer needed
+    diagBell(reason);
+  }
+  function fireBellViaElement(reason) {    // fallback: ring through the (kept-alive) media element
+    if (bellFired) return; bellFired = true;
+    try { if (waBellSrc) waBellSrc.stop(); } catch (e) {}
+    var rang = false;
+    if (bellUrl) {
+      try {
+        var ta = getTimerAudio();
+        ta.loop = false; ta.src = bellUrl; ta.currentTime = 0;
+        var p = ta.play(); if (p && p.catch) p.catch(function () {}); rang = true;
+      } catch (e) {}
+    }
+    if (!rang) bell(1);                    // last resort: immediate foreground path
+    diagBell(reason);
+  }
+  function stopBackgroundBell() {
+    if (bellTimer) { clearTimeout(bellTimer); bellTimer = null; }
+    try { if (waBellSrc) waBellSrc.stop(); } catch (e) {} waBellSrc = null;
+    try { if (waMarker) { waMarker.onended = null; waMarker.stop(); } } catch (e) {} waMarker = null;
+    if (timerAudio) { try { timerAudio.pause(); } catch (e) {} }
+    mediaSessionStopped();
+  }
+  function diagBell(reason) {
+    diagPush({ ev: "bell", reason: reason,
+               carrierPaused: timerAudio ? timerAudio.paused : null,
+               carrierCt: timerAudio && isFinite(timerAudio.currentTime) ? +timerAudio.currentTime.toFixed(3) : null });
   }
 
   var toneBtn = $("toneBtn"), toneName = $("toneName"), toneNameTimer = null;
@@ -833,7 +891,6 @@
   ring.style.strokeDasharray = CIRC;
 
   var totalSec = lastDur, remaining = lastDur, endAt = 0, running = false, ticker = null;
-  var endByMedia = false;   // true when the generated media file is handling the end bell
 
   function fmt(sec) {
     sec = Math.max(0, Math.round(sec));
@@ -853,10 +910,9 @@
     remaining = totalSec;
     enterRun();
     if (startToneOn) bell(0.7);                      // immediate start bell (foreground)
-    endByMedia = startTimerMedia(remaining) === true; // silence+bell media file (survives lock/tab-switch)
+    var bgState = startBackgroundBell(remaining);    // carrier + wall-clock-scheduled bell (survives lock)
     diagAttachMeta();
-    diagPush({ ev: "start", tone: currentToneId, totalSec: totalSec, bellAtSec: remaining, byMedia: endByMedia,
-               dur: timerAudio && isFinite(timerAudio.duration) ? +timerAudio.duration.toFixed(3) : null });
+    diagPush({ ev: "start", tone: currentToneId, totalSec: totalSec, bellAtSec: remaining, bg: bgState });
     beginTicking();
   }
   function beginTicking() {
@@ -874,7 +930,7 @@
     goBtn.textContent = "RESUME";
     timeLabel.textContent = "paused";
     clearInterval(ticker); ticker = null;
-    stopTimerMedia();
+    stopBackgroundBell();
   }
   function resume() {
     if (remaining <= 0) return;
@@ -883,15 +939,18 @@
     timeLabel.textContent = "";
     running = true;
     endAt = Date.now() + remaining * 1000;
-    endByMedia = startTimerMedia(remaining) === true;  // rebuild the media file for the new remaining
+    var bgState = startBackgroundBell(remaining);     // re-arm carrier + scheduled bell for the new remaining
     diagAttachMeta();
-    diagPush({ ev: "resume", bellAtSec: remaining, byMedia: endByMedia });
+    diagPush({ ev: "resume", bellAtSec: remaining, bg: bgState });
     tick();
     ticker = setInterval(tick, 200);
   }
   function tick() {
     remaining = (endAt - Date.now()) / 1000;
-    diagTick();                                     // observation: log media currentTime/paused/vis each tick
+    diagTick();                                     // observation: log carrier currentTime/paused/vis each tick
+    updatePositionState();                          // keep the MediaSession fresh
+    // fallback ring: if the on-time Web Audio path didn't fire within the grace window
+    if (running && !bellFired && Date.now() >= bellTargetMs + BELL_GRACE) fireBellViaElement("tick");
     if (remaining <= 0) { remaining = 0; renderRing(); finish(); return; }
     renderRing();
   }
@@ -899,12 +958,12 @@
     running = false;
     clearInterval(ticker); ticker = null;
     diagPush({ ev: "finish", ct: timerAudio && isFinite(timerAudio.currentTime) ? +timerAudio.currentTime.toFixed(3) : null,
-               paused: timerAudio ? timerAudio.paused : null, byMedia: endByMedia, vis: document.visibilityState });
+               paused: timerAudio ? timerAudio.paused : null, bellFired: bellFired, vis: document.visibilityState });
     document.body.classList.remove("running");
-    // the media file rings the end bell on its own; only ring here as a fallback
-    // (e.g. the tone wasn't decoded in time), so we never double-ring
-    if (!endByMedia) bell(1);
-    endByMedia = false;
+    // the bell is fired by the scheduled paths (Web Audio on-time / element
+    // fallback / setTimeout backup); don't ring here — that would risk a double
+    // ring against the on-time Web Audio path. The carrier/scheduling is torn
+    // down on toSetMode (or when the bell rings and the carrier is swapped out).
     timeText.textContent = "0:00";
     timeLabel.textContent = "complete";
     goBtn.textContent = "DONE";
@@ -920,7 +979,7 @@
   function toSetMode() {
     running = false;
     clearInterval(ticker); ticker = null;
-    stopTimerMedia(); endByMedia = false;
+    stopBackgroundBell();
     document.body.classList.remove("run", "running");
     goBtn.classList.remove("go-run");
     goBtn.textContent = "START";
