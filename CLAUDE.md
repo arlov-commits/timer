@@ -21,7 +21,7 @@ growing.
 
 Rules:
 - **Bump the version on every commit** (at minimum the patch).
-- **Current version: `v1.0.2`.**
+- **Current version: `v1.0.3`.**
 - The version string is the source of truth in two places — keep them in sync
   when bumping:
   1. `index.html` → the `<span class="ver">` inside the info tooltip.
@@ -38,10 +38,15 @@ cached file changes.
 
 ## Reliability note (background audio)
 
-The end bell is scheduled on the Web Audio hardware clock and kept alive via a
-MediaStream `<audio>` sink, so it rings on time even with the screen locked.
-Aggressive battery-saver/Doze can still suspend the audio context and delay the
-ring until wake — this limitation is disclosed in the info tooltip.
+At start, the app generates a single WAV in memory — `remaining` seconds of
+silence followed by the selected bell — and plays it through an `<audio>`
+element. Chrome keeps an actively-playing media element running through screen
+lock and tab-switches, so the bell rings on time with no JS or AudioContext
+needed at the moment it fires (those get frozen/suspended in the background).
+The WAV sample rate is lowered for longer sits to bound memory (~50 MB). The
+AudioContext is used only to decode tones and for immediate foreground sounds
+(start bell + cycle previews). Aggressive battery-saver/Doze can still delay
+playback — this limitation is disclosed in the info tooltip.
 
 ## Verifying changes
 

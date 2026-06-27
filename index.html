@@ -309,7 +309,7 @@
     <span class="tip" id="tip" role="tooltip">
       <p><strong>Install:</strong> add this page to your home screen to save it as an app on your device.</p>
       <p><strong>Heads-up:</strong> the end bell is scheduled to ring even with the screen locked, but a phone's battery-saver / Doze mode can still delay it until you wake the device. For a critical sit, keep the screen on or plugged in.</p>
-      <span class="ver">dìng · v1.0.2</span>
+      <span class="ver">dìng · v1.0.3</span>
     </span>
   </footer>
 
@@ -328,32 +328,27 @@
   } catch (e) {}
 
   // ---------- Audio engine ----------
-  // We route the *end* bell through Web Audio scheduled on the hardware clock,
-  // played out via a MediaStream <audio> sink. That keeps the audio session
-  // alive while the phone screen is locked, so the bell still rings on time
-  // (a plain setTimeout/audio.play at expiry gets frozen by Android and
-  // degrades to a "click" or silence).
-  var audioCtx = null, audioSink = null, msDest = null;
+  // Reliability strategy: the *end* bell can't depend on JS or the Web Audio
+  // clock running in the background — Android/Chrome freezes timers and
+  // suspends the AudioContext when the tab is hidden or the screen is locked.
+  // Instead, the moment the timer starts we build a single real media file
+  // (silence for the duration, then the bell) and play it through an <audio>
+  // element. Chrome keeps an actively-playing media element running through
+  // lock and tab-switches (like a podcast), so the bell rings on time with no
+  // JS needed at the moment it fires.
+  //
+  // The AudioContext below is used only for decoding tones and for immediate
+  // foreground sounds (start bell + cycle previews).
+  var audioCtx = null;
   function ensureAudio() {
     if (!audioCtx) {
       var AC = window.AudioContext || window.webkitAudioContext;
       if (AC) audioCtx = new AC();
-      if (audioCtx) {
-        try {
-          msDest = audioCtx.createMediaStreamDestination();
-          audioSink = new Audio();
-          audioSink.srcObject = msDest.stream;
-          audioSink.loop = true;
-          document.body.appendChild(audioSink);   // some Androids need it attached
-        } catch (e) { msDest = null; audioSink = null; }
-      }
     }
     if (audioCtx && audioCtx.state === "suspended") audioCtx.resume();
     return audioCtx;
   }
-  // bells connect here: the MediaStream sink (kept alive in background) when
-  // available, otherwise straight to the speakers
-  function outputNode() { return msDest || (audioCtx && audioCtx.destination); }
+  function outputNode() { return audioCtx && audioCtx.destination; }
   function synthBell(strength) {
     var ctx = ensureAudio(); if (!ctx) return;
     var now = ctx.currentTime, g = strength || 1;
@@ -451,29 +446,7 @@
     synthBell(strength);
   }
 
-  // --- background keep-alive so the locked-screen scheduled bell still fires ---
-  var keepAliveNode = null, keepStopTimer = null;
-  function startKeepAlive() {
-    var ctx = ensureAudio(); if (!ctx) return;
-    clearTimeout(keepStopTimer);
-    if (audioSink) { var pr = audioSink.play(); if (pr && pr.catch) pr.catch(function () {}); }
-    if (!keepAliveNode) {
-      try {
-        var buf = ctx.createBuffer(1, Math.max(1, Math.floor(ctx.sampleRate * 0.5)), ctx.sampleRate);
-        keepAliveNode = ctx.createBufferSource(); keepAliveNode.buffer = buf; keepAliveNode.loop = true;
-        var g = ctx.createGain(); g.gain.value = 0;       // inaudible, just keeps the graph active
-        keepAliveNode.connect(g); g.connect(outputNode());
-        keepAliveNode.start();
-      } catch (e) {}
-    }
-    setMediaSession(true);
-  }
-  function stopKeepAlive() {
-    clearTimeout(keepStopTimer);
-    if (keepAliveNode) { try { keepAliveNode.stop(); } catch (e) {} keepAliveNode = null; }
-    if (audioSink) { try { audioSink.pause(); } catch (e) {} }
-    setMediaSession(false);
-  }
+  // --- MediaSession (so the OS treats the timer as real background playback) ---
   var mediaActionsSet = false;
   function setMediaSession(playing) {
     if (!("mediaSession" in navigator)) return;
@@ -493,30 +466,71 @@
     } catch (e) {}
   }
 
-  // --- schedule the END bell on the audio clock (survives screen lock) ---
-  var scheduled = null;
-  function scheduleEndBell(sec) {
-    cancelScheduled();
-    var t = toneById(currentToneId);
-    if (t.id === "silent" || !t.src) return;          // nothing to ring; no keep-alive needed
-    var ctx = ensureAudio(); if (!ctx) return;
-    startKeepAlive();
-    var fireAt = ctx.currentTime + Math.max(0, sec), token = {};
-    scheduled = { token: token, node: null, ok: false };
-    decodeTone(t).then(function (buf) {
-      if (!scheduled || scheduled.token !== token || !buf) return;   // cancelled / failed
-      try {
-        var src = ctx.createBufferSource(); src.buffer = buf;
-        var g = ctx.createGain(); g.gain.value = 1;
-        src.connect(g); g.connect(outputNode());
-        src.start(Math.max(ctx.currentTime + 0.02, fireAt));
-        scheduled.node = src; scheduled.ok = true;
-      } catch (e) {}
-    });
+  // --- the timer's reliable background bell, as a generated media file ---
+  var timerAudio = null;
+  function getTimerAudio() {
+    if (!timerAudio) {
+      timerAudio = new Audio();
+      timerAudio.preload = "auto";
+      document.body.appendChild(timerAudio);
+      timerAudio.addEventListener("ended", function () { setMediaSession(false); });
+    }
+    return timerAudio;
   }
-  function cancelScheduled() {
-    if (scheduled && scheduled.node) { try { scheduled.node.stop(); } catch (e) {} }
-    scheduled = null;
+  // keep the generated file's memory bounded (~50 MB): lower the sample rate for
+  // longer sits. Short sits get full quality.
+  function pickRate(sec) {
+    var budget = 50 * 1024 * 1024, rates = [22050, 16000, 11025, 8000, 6000, 4000];
+    for (var i = 0; i < rates.length; i++) if ((sec + 35) * rates[i] * 2 <= budget) return rates[i];
+    return 4000;
+  }
+  // build a 16-bit mono WAV: `sec` seconds of silence, then the bell
+  function buildTimerWav(sec, buf, rate) {
+    var bellLen = Math.ceil(buf.duration * rate);
+    var n = Math.max(1, Math.floor(sec * rate) + bellLen);
+    var ab = new ArrayBuffer(44 + n * 2), dv = new DataView(ab);
+    function wr(off, s) { for (var i = 0; i < s.length; i++) dv.setUint8(off + i, s.charCodeAt(i)); }
+    wr(0, "RIFF"); dv.setUint32(4, 36 + n * 2, true); wr(8, "WAVE"); wr(12, "fmt ");
+    dv.setUint32(16, 16, true); dv.setUint16(20, 1, true); dv.setUint16(22, 1, true);
+    dv.setUint32(24, rate, true); dv.setUint32(28, rate * 2, true);
+    dv.setUint16(32, 2, true); dv.setUint16(34, 16, true);
+    wr(36, "data"); dv.setUint32(40, n * 2, true);
+    var pcm = new Int16Array(ab, 44, n);              // zero-filled = silence
+    var off = Math.floor(sec * rate), ratio = buf.sampleRate / rate;
+    var ch = buf.numberOfChannels, d0 = buf.getChannelData(0), d1 = ch > 1 ? buf.getChannelData(1) : null;
+    for (var i = 0; i < bellLen; i++) {              // resample (linear) the bell into the tail
+      var si = i * ratio, i0 = si | 0, f = si - i0;
+      var s = (d0[i0] || 0) + ((d0[i0 + 1] || 0) - (d0[i0] || 0)) * f;
+      if (d1) { var t0 = d1[i0] || 0, t1 = d1[i0 + 1] || 0; s = (s + (t0 + (t1 - t0) * f)) * 0.5; }
+      var o = off + i;
+      if (o < n) { var v = s * 32767; pcm[o] = v > 32767 ? 32767 : v < -32768 ? -32768 : v | 0; }
+    }
+    return new Blob([ab], { type: "audio/wav" });
+  }
+  // start (or restart) the background bell media for `sec` seconds.
+  // returns true if real media is handling the end bell.
+  function startTimerMedia(sec) {
+    var t = toneById(currentToneId);
+    if (t.id === "silent" || !t.src) { stopTimerMedia(); return "silent"; }
+    var ctx = ensureAudio(), buf = buffers[t.id];
+    if (!ctx || !buf) { decodeTone(t); return false; }   // not decoded yet — fall back this once
+    try {
+      var url = URL.createObjectURL(buildTimerWav(sec, buf, pickRate(sec)));
+      var ta = getTimerAudio();
+      if (ta.__url) { try { URL.revokeObjectURL(ta.__url); } catch (e) {} }
+      ta.__url = url; ta.src = url; ta.loop = false; ta.currentTime = 0;
+      var p = ta.play(); if (p && p.catch) p.catch(function () {});
+      setMediaSession(true);
+      return true;
+    } catch (e) { return false; }
+  }
+  function stopTimerMedia() {
+    if (timerAudio) {
+      try { timerAudio.pause(); } catch (e) {}
+      if (timerAudio.__url) { try { URL.revokeObjectURL(timerAudio.__url); } catch (e) {} timerAudio.__url = null; }
+      try { timerAudio.removeAttribute("src"); timerAudio.load(); } catch (e) {}
+    }
+    setMediaSession(false);
   }
 
   var toneBtn = $("toneBtn"), toneName = $("toneName"), toneNameTimer = null;
@@ -537,9 +551,20 @@
     currentToneId = toneById(id).id;
     try { localStorage.setItem("ding.tone", currentToneId); } catch (e) {}
     renderTone();
+    if (currentToneId !== "silent") decodeTone(toneById(currentToneId));  // ready for the media build
     if (opts && opts.flash) flashToneName(toneById(currentToneId).name);
     if (opts && opts.preview && currentToneId !== "silent") bell(0.85);
   }
+  // decode the current tone as soon as the user first touches the page, so the
+  // background media file can be built synchronously when they press Start
+  var audioPrimed = false;
+  function primeAudio() {
+    if (audioPrimed) return; audioPrimed = true;
+    ensureAudio();
+    if (currentToneId !== "silent") decodeTone(toneById(currentToneId));
+  }
+  document.addEventListener("pointerdown", primeAudio, { once: true, passive: true });
+  document.addEventListener("keydown", primeAudio, { once: true });
   toneBtn.addEventListener("click", function () {
     var i = TONES.indexOf(toneById(currentToneId));
     setTone(TONES[(i + 1) % TONES.length].id, { flash: true, preview: true });
@@ -749,6 +774,7 @@
   ring.style.strokeDasharray = CIRC;
 
   var totalSec = lastDur, remaining = lastDur, endAt = 0, running = false, ticker = null;
+  var endByMedia = false;   // true when the generated media file is handling the end bell
 
   function fmt(sec) {
     sec = Math.max(0, Math.round(sec));
@@ -768,7 +794,7 @@
     remaining = totalSec;
     enterRun();
     if (startToneOn) bell(0.7);                      // immediate start bell (foreground)
-    scheduleEndBell(remaining);                      // end bell scheduled on the audio clock (survives lock)
+    endByMedia = startTimerMedia(remaining) === true; // silence+bell media file (survives lock/tab-switch)
     beginTicking();
   }
   function beginTicking() {
@@ -786,7 +812,7 @@
     goBtn.textContent = "RESUME";
     timeLabel.textContent = "paused";
     clearInterval(ticker); ticker = null;
-    cancelScheduled(); stopKeepAlive();
+    stopTimerMedia();
   }
   function resume() {
     if (remaining <= 0) return;
@@ -795,7 +821,7 @@
     timeLabel.textContent = "";
     running = true;
     endAt = Date.now() + remaining * 1000;
-    scheduleEndBell(remaining);                      // re-arm the audio-clock bell
+    endByMedia = startTimerMedia(remaining) === true;  // rebuild the media file for the new remaining
     tick();
     ticker = setInterval(tick, 200);
   }
@@ -808,11 +834,10 @@
     running = false;
     clearInterval(ticker); ticker = null;
     document.body.classList.remove("running");
-    // end bell was scheduled on the audio clock; only ring here if that wasn't
-    // available, so we never double-ring. Do NOT cancel the scheduled node —
-    // clock drift could stop it a hair before it fires.
-    if (!(scheduled && scheduled.ok)) bell(1);
-    keepStopTimer = setTimeout(stopKeepAlive, 15000);  // let it ring out, then release audio focus
+    // the media file rings the end bell on its own; only ring here as a fallback
+    // (e.g. the tone wasn't decoded in time), so we never double-ring
+    if (!endByMedia) bell(1);
+    endByMedia = false;
     timeText.textContent = "0:00";
     timeLabel.textContent = "complete";
     goBtn.textContent = "DONE";
@@ -828,7 +853,7 @@
   function toSetMode() {
     running = false;
     clearInterval(ticker); ticker = null;
-    cancelScheduled(); stopKeepAlive();
+    stopTimerMedia(); endByMedia = false;
     document.body.classList.remove("run", "running");
     goBtn.classList.remove("go-run");
     goBtn.textContent = "START";
