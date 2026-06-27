@@ -21,7 +21,9 @@ growing.
 
 Rules:
 - **Bump the version on every commit** (at minimum the patch).
-- **Current version: `v1.0.3`.**
+- **Current version: `v1.0.4-diag`.** (diagnostic build — on-screen log of the
+  timer media element's `currentTime`/`paused`/visibility per tick, behind a tap
+  on the version number; key `ding_diag` in localStorage.)
 - The version string is the source of truth in two places — keep them in sync
   when bumping:
   1. `index.html` → the `<span class="ver">` inside the info tooltip.

@@ -243,6 +243,7 @@
     display: block; margin-top: 10px; padding-top: 9px;
     border-top: 1px solid var(--forest-deep);
     color: var(--muted); font-size: 11px; letter-spacing: 0.6px;
+    cursor: pointer; pointer-events: auto;
   }
   .tip::after {
     content: ""; position: absolute; bottom: -6px; left: 18px; transform: rotate(45deg);
@@ -250,6 +251,32 @@
     border-right: 1px solid var(--forest-deep); border-bottom: 1px solid var(--forest-deep);
   }
   footer.tip-open .tip { opacity: 1; transform: translateY(0); }
+
+  /* ---------- Diagnostics panel (v1.0.4-diag) ---------- */
+  #diagPanel {
+    position: fixed; inset: 0; z-index: 100; padding: 16px;
+    background: rgba(0, 0, 0, 0.62);
+    display: none; align-items: center; justify-content: center;
+  }
+  #diagPanel.open { display: flex; }
+  #diagPanel .dg-card {
+    background: var(--midnight-2); border: 1px solid var(--forest-deep);
+    border-radius: 14px; width: 100%; max-width: 520px; max-height: 82vh;
+    display: flex; flex-direction: column; padding: 14px; box-shadow: var(--shadow);
+  }
+  #diagPanel .dg-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; color: var(--cream); font-size: 14px; }
+  #diagPanel .dg-x { background: none; border: none; color: var(--muted); font-size: 18px; cursor: pointer; }
+  #diagPanel .dg-btns { display: flex; gap: 8px; margin-bottom: 10px; }
+  #diagPanel .dg-btns button {
+    flex: 1; padding: 9px; border-radius: 8px; border: 1px solid var(--forest-deep);
+    background: var(--forest-deep); color: var(--cream); font-family: inherit; font-size: 13px; cursor: pointer;
+  }
+  #diagPanel .dg-pre {
+    margin: 0; overflow: auto; background: var(--midnight); border: 1px solid var(--forest-deep);
+    border-radius: 8px; padding: 10px; font-size: 11px; line-height: 1.45; color: #cfe3d6;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space: pre;
+    -webkit-user-select: text; user-select: text;
+  }
 </style>
 </head>
 <body>
@@ -309,7 +336,7 @@
     <span class="tip" id="tip" role="tooltip">
       <p><strong>Install:</strong> add this page to your home screen to save it as an app on your device.</p>
       <p><strong>Heads-up:</strong> the end bell is scheduled to ring even with the screen locked, but a phone's battery-saver / Doze mode can still delay it until you wake the device. For a critical sit, keep the screen on or plugged in.</p>
-      <span class="ver">dìng · v1.0.3</span>
+      <span class="ver">dìng · v1.0.4-diag</span>
     </span>
   </footer>
 
@@ -326,6 +353,38 @@
       }
     });
   } catch (e) {}
+
+  // ---------- Diagnostics (v1.0.4-diag — OBSERVATION ONLY, no audio changes) ----------
+  // Records the timer media element's currentTime/paused + page visibility on
+  // every tick, so we can see whether playback freezes when the screen locks.
+  var DIAG_KEY = "ding_diag", DIAG_CAP = 2000, diagLog = [];
+  try { var draw = localStorage.getItem(DIAG_KEY); if (draw) { var darr = JSON.parse(draw); if (Array.isArray(darr)) diagLog = darr; } } catch (e) {}
+  function diagWrite() { try { localStorage.setItem(DIAG_KEY, JSON.stringify(diagLog)); } catch (e) {} }
+  function diagPush(rec) {
+    rec.t = Date.now();
+    diagLog.push(rec);
+    if (diagLog.length > DIAG_CAP) diagLog.splice(0, diagLog.length - DIAG_CAP);  // ring buffer
+    diagWrite();
+    if (diagOpen) renderDiag();
+  }
+  function diagTick(tag) {
+    var ta = timerAudio;
+    diagPush({
+      ev: tag || "tick",
+      ct: ta && isFinite(ta.currentTime) ? +ta.currentTime.toFixed(3) : null,
+      paused: ta ? ta.paused : null,
+      vis: document.visibilityState
+    });
+  }
+  // attach a one-time loadedmetadata logger to the timer media element so we
+  // capture the actual blob duration once it's known
+  function diagAttachMeta() {
+    var ta = timerAudio;
+    if (!ta || ta.__diagMeta) return; ta.__diagMeta = true;
+    ta.addEventListener("loadedmetadata", function () {
+      diagPush({ ev: "meta", dur: isFinite(ta.duration) ? +ta.duration.toFixed(3) : null });
+    });
+  }
 
   // ---------- Audio engine ----------
   // Reliability strategy: the *end* bell can't depend on JS or the Web Audio
@@ -795,6 +854,9 @@
     enterRun();
     if (startToneOn) bell(0.7);                      // immediate start bell (foreground)
     endByMedia = startTimerMedia(remaining) === true; // silence+bell media file (survives lock/tab-switch)
+    diagAttachMeta();
+    diagPush({ ev: "start", tone: currentToneId, totalSec: totalSec, bellAtSec: remaining, byMedia: endByMedia,
+               dur: timerAudio && isFinite(timerAudio.duration) ? +timerAudio.duration.toFixed(3) : null });
     beginTicking();
   }
   function beginTicking() {
@@ -822,17 +884,22 @@
     running = true;
     endAt = Date.now() + remaining * 1000;
     endByMedia = startTimerMedia(remaining) === true;  // rebuild the media file for the new remaining
+    diagAttachMeta();
+    diagPush({ ev: "resume", bellAtSec: remaining, byMedia: endByMedia });
     tick();
     ticker = setInterval(tick, 200);
   }
   function tick() {
     remaining = (endAt - Date.now()) / 1000;
+    diagTick();                                     // observation: log media currentTime/paused/vis each tick
     if (remaining <= 0) { remaining = 0; renderRing(); finish(); return; }
     renderRing();
   }
   function finish() {
     running = false;
     clearInterval(ticker); ticker = null;
+    diagPush({ ev: "finish", ct: timerAudio && isFinite(timerAudio.currentTime) ? +timerAudio.currentTime.toFixed(3) : null,
+               paused: timerAudio ? timerAudio.paused : null, byMedia: endByMedia, vis: document.visibilityState });
     document.body.classList.remove("running");
     // the media file rings the end bell on its own; only ring here as a fallback
     // (e.g. the tone wasn't decoded in time), so we never double-ring
@@ -882,7 +949,10 @@
     }
   });
 
-  document.addEventListener("visibilitychange", function () { if (!document.hidden && running) tick(); });
+  document.addEventListener("visibilitychange", function () {
+    if (running) diagTick("vis:" + document.visibilityState);   // boundary record around lock/unlock
+    if (!document.hidden && running) tick();
+  });
 
   // ---------- Footer info tooltip (tap to toggle; works without hover) ----------
   var footer = $("footer"), infoBtn = $("infoBtn");
@@ -893,6 +963,72 @@
   document.addEventListener("click", function (e) {
     if (!footer.contains(e.target)) footer.classList.remove("tip-open");
   });
+
+  // ---------- Diagnostics panel (tap the version number to open) ----------
+  var diagOpen = false, diagPanel = null, diagPre = null;
+  function buildDiagPanel() {
+    diagPanel = document.createElement("div");
+    diagPanel.id = "diagPanel";
+    diagPanel.innerHTML =
+      '<div class="dg-card">' +
+        '<div class="dg-head"><span>Diagnostics · ding_diag</span><button class="dg-x" id="dgClose" aria-label="Close">✕</button></div>' +
+        '<div class="dg-btns"><button id="dgCopy">Copy log</button><button id="dgClear">Clear log</button></div>' +
+        '<pre class="dg-pre" id="dgPre"></pre>' +
+      '</div>';
+    document.body.appendChild(diagPanel);
+    diagPre = diagPanel.querySelector("#dgPre");
+    diagPanel.addEventListener("click", function (e) { if (e.target === diagPanel) closeDiag(); });
+    $("dgClose").addEventListener("click", closeDiag);
+    $("dgClear").addEventListener("click", function () { diagLog = []; diagWrite(); renderDiag(); });
+    $("dgCopy").addEventListener("click", copyDiag);
+  }
+  function openDiag() { if (!diagPanel) buildDiagPanel(); diagOpen = true; diagPanel.classList.add("open"); renderDiag(); }
+  function closeDiag() { diagOpen = false; if (diagPanel) diagPanel.classList.remove("open"); }
+  function fmtClock(ts) {
+    var d = new Date(ts); function z(n) { return (n < 10 ? "0" : "") + n; }
+    return z(d.getHours()) + ":" + z(d.getMinutes()) + ":" + z(d.getSeconds());
+  }
+  function renderDiag() {
+    if (!diagPre) return;
+    var last = diagLog.slice(-20), out = "total records: " + diagLog.length + "  (showing last " + last.length + ")\n\n", prev = null;
+    for (var i = 0; i < last.length; i++) {
+      var r = last[i];
+      var dt = prev ? (r.t - prev.t) / 1000 : 0;
+      var dct = (prev && prev.ct != null && r.ct != null) ? (r.ct - prev.ct) : null;
+      out += fmtClock(r.t) + "  " + (r.ev || "tick")
+        + "  ct=" + (r.ct == null ? "—" : r.ct.toFixed(2))
+        + "  p=" + (r.paused == null ? "—" : (r.paused ? "1" : "0"))
+        + "  vis=" + (r.vis || "—")
+        + (r.dur != null ? "  dur=" + r.dur : "")
+        + (r.bellAtSec != null ? "  bellAt=" + r.bellAtSec : "")
+        + (r.byMedia != null ? "  media=" + (r.byMedia ? "1" : "0") : "")
+        + "  Δt=" + dt.toFixed(1) + "s"
+        + "  Δct=" + (dct == null ? "—" : (dct >= 0 ? "+" : "") + dct.toFixed(2))
+        + "\n";
+      prev = r;
+    }
+    diagPre.textContent = out;
+  }
+  function copyDiag() {
+    var txt = JSON.stringify(diagLog, null, 2);
+    var btn = $("dgCopy");
+    function done(ok) { btn.textContent = ok ? "Copied!" : "Copy failed — select & copy below"; setTimeout(function () { btn.textContent = "Copy log"; }, 1800); if (!ok && diagPre) diagPre.textContent = txt; }
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(txt).then(function () { done(true); }, function () { fallbackCopy(txt, done); });
+      } else fallbackCopy(txt, done);
+    } catch (e) { fallbackCopy(txt, done); }
+  }
+  function fallbackCopy(txt, done) {
+    try {
+      var ta = document.createElement("textarea");
+      ta.value = txt; ta.style.position = "fixed"; ta.style.opacity = "0";
+      document.body.appendChild(ta); ta.focus(); ta.select();
+      var ok = document.execCommand("copy"); document.body.removeChild(ta); done(ok);
+    } catch (e) { done(false); }
+  }
+  var verEl = document.querySelector(".ver");
+  if (verEl) verEl.addEventListener("click", function (e) { e.stopPropagation(); openDiag(); });
 
   if ("serviceWorker" in navigator) {
     window.addEventListener("load", function () { navigator.serviceWorker.register("sw.js").catch(function () {}); });
