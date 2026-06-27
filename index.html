@@ -230,12 +230,19 @@
   .info:active { transform: scale(0.9); }
   .tip {
     position: absolute; bottom: 30px; left: 0; transform: translateY(6px);
-    width: max-content; max-width: 74vw;
+    width: max-content; max-width: min(86vw, 320px);
     background: var(--midnight-2); color: var(--cream);
     border: 1px solid var(--forest-deep); border-radius: 12px;
-    padding: 10px 13px; font-size: 12px; line-height: 1.45; letter-spacing: 0.2px;
+    padding: 12px 14px; font-size: 12px; line-height: 1.5; letter-spacing: 0.2px;
     box-shadow: var(--shadow); text-align: left;
     opacity: 0; pointer-events: none; transition: opacity 0.18s ease, transform 0.18s ease;
+  }
+  .tip p { margin: 0 0 9px; }
+  .tip strong { color: var(--cream); font-weight: 600; }
+  .tip .ver {
+    display: block; margin-top: 10px; padding-top: 9px;
+    border-top: 1px solid var(--forest-deep);
+    color: var(--muted); font-size: 11px; letter-spacing: 0.6px;
   }
   .tip::after {
     content: ""; position: absolute; bottom: -6px; left: 18px; transform: rotate(45deg);
@@ -299,7 +306,11 @@
   <footer id="footer">
     <span>100% offline</span>
     <button class="info" id="infoBtn" aria-label="About installing this app">&#9432;</button>
-    <span class="tip" id="tip" role="tooltip">add this page to your home screen to save it as an app on your device</span>
+    <span class="tip" id="tip" role="tooltip">
+      <p><strong>Install:</strong> add this page to your home screen to save it as an app on your device.</p>
+      <p><strong>Heads-up:</strong> the end bell is scheduled to ring even with the screen locked, but a phone's battery-saver / Doze mode can still delay it until you wake the device. For a critical sit, keep the screen on or plugged in.</p>
+      <span class="ver">dìng · v1.0.2</span>
+    </span>
   </footer>
 
 <script>
